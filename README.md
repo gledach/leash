@@ -12,6 +12,12 @@ A single Windows exe. No account, no network connection, nothing uploaded.
 It is read-only: it never deletes, kills or blocks anything. Everything it
 observes stays on your machine.
 
+**v0.1 records every change on the PC during the session, not only the
+agent's.** Other apps running at the same time — a browser, VS Code, Steam,
+another dev server — appear in the report too. Close other apps and keep
+sessions short if you want a quieter report. Per-process attribution
+(`leash run -- <agent>`) is being built.
+
 ![A leash HTML report, with a High / Medium / Info summary and colour-coded cards for files, startup entries and packages.](docs/report-sample.png)
 
 ## Get the preview
@@ -131,8 +137,10 @@ Please read [docs/blind-spots.md](docs/blind-spots.md). The short version:
   high-priority names such as `.env`.
 - File reads are invisible. The journal records creates, deletes, renames and
   writes, not opens.
-- v1 cannot name the process that made a change. That needs ETW, planned for
-  v2. Short-lived helpers may already be gone by `leash stop`.
+- v0.1 cannot name the process that made a change, so the report is
+  system-wide: anything else running in the same window of time shows up
+  too. Per-process attribution (`leash run -- <agent>`) is being built.
+  Short-lived helpers may already be gone by `leash stop`.
 - USN journal reads need Administrator. Without it, only the fallback folders
   are scanned. `leash doctor` explains the current mode.
 - The journal can wrap or be recreated between start and stop; early events
@@ -206,11 +214,14 @@ docs/blind-spots.md
 
 ## Roadmap
 
+- **Attribution (`leash run`).** Start the agent as a child, or attach to a
+  running process, and use ETW to name which process made each change. The
+  report will split into “your agent did this”, “other apps changed this
+  meanwhile”, and “unattributed”. Being built now; v0.1 is still system-wide.
 - **v1.5 live mode.** Tail the USN journal during the session, and toast when
   lots of files are deleted outside the repo. Optional ntfy or Telegram
   delivery, still from your machine.
-- **v2.** ETW attribution, so a change can be named as a process, and watching
-  reads as well as writes.
+- **Later.** Watching reads as well as writes.
 
 ## Licence
 

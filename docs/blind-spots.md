@@ -6,7 +6,7 @@ This is the honest list. leash is an observer. It does not prevent anything, and
 
 - **Reads are invisible.** The USN journal records creates, deletes, renames, and data writes. Opening or reading a file does not show up.
 
-- **No process attribution in v1.** A deleted folder or a new Run key is listed as a fact, not as “Cursor did this.” That needs ETW (planned for v2). Short-lived helper processes may be gone by `leash stop` and will not appear under leftover processes.
+- **No process attribution in v0.1.** The report lists every change on the PC between start and stop, not only the agent's. A browser, VS Code, Steam or another dev server running at the same time will show up too. A deleted folder or a new Run key is listed as a fact, not as “Cursor did this.” Close other apps and keep sessions short if you want a quieter report. Per-process attribution (`leash run -- <agent>`) is being built. Short-lived helper processes may already be gone by `leash stop` and will not appear under leftover processes.
 
 - **USN journal reads need Administrator.** Without elevation, leash falls back to a hash/mtime scan of priority folders (your profile dotfiles, `AppData\Roaming`, Startup, nearby projects). It will not see the rest of the disk. `leash doctor` explains the current mode.
 
