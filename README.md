@@ -18,8 +18,8 @@ observes stays on your machine.
 
 Windows 11, unsigned, marked as a pre-release.
 
-[Download `leash-0.1.0-win64.zip`](https://github.com/gledach/leash/releases/latest)
-from the latest release, unzip it, and double-click `leash.exe`.
+[Download `leash-0.1.0-win64.zip`](https://github.com/gledach/leash/releases/tag/v0.1.0)
+from the v0.1.0 pre-release, unzip it, and double-click `leash.exe`.
 
 Windows SmartScreen will likely warn that the file is unsigned. Choose
 **More info**, then **Run anyway**. A checksum is published next to the zip
