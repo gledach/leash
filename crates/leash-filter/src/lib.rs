@@ -191,11 +191,26 @@ impl FilterEngine {
     }
 
     pub fn classify_path(&self, path: &str, kind: ChangeKind) -> PathDecision {
+        self.classify(path, kind, false)
+    }
+
+    /// Classify a path, taking directory-vs-file into account so NTFS
+    /// "directory data overwrite" metadata events are not treated as High.
+    pub fn classify(&self, path: &str, kind: ChangeKind, is_dir: bool) -> PathDecision {
         let norm = normalize_path(path);
         if norm.is_empty() {
             return PathDecision::Keep {
                 severity: Severity::Info,
                 reason: "path could not be resolved; showing the raw journal name".into(),
+            };
+        }
+
+        // Privileged editor/agent config must win over ignore rules: an agent
+        // rewriting its own hooks, MCP servers, or settings is a real concern.
+        if is_privileged_agent_config(&norm) {
+            return PathDecision::Keep {
+                severity: Severity::High,
+                reason: "editor or agent settings, hooks, or permissions file".into(),
             };
         }
 
@@ -256,6 +271,21 @@ impl FilterEngine {
         if windows_os_noise(&norm) {
             return PathDecision::Ignore {
                 reason: "Windows system directory (prefetch, logs, and general OS noise)".into(),
+            };
+        }
+
+        // Directory data overwrite/extend is almost always NTFS metadata
+        // (mtime, index, etc.), not a meaningful content change.
+        if is_dir && matches!(
+            kind,
+            ChangeKind::DataOverwrite
+                | ChangeKind::DataExtend
+                | ChangeKind::DataTruncation
+                | ChangeKind::Other
+        ) {
+            return PathDecision::Keep {
+                severity: Severity::Info,
+                reason: "directory metadata change".into(),
             };
         }
 
@@ -351,24 +381,90 @@ fn compile_globs(patterns: &[String]) -> Result<GlobSet, ConfigError> {
 }
 
 /// Lowercase, `/`-separated path. Strips the `\\?\` / `//?/` prefix and a
-/// trailing slash. Drive letters stay (`c:/users/alek`).
+/// trailing slash. Drive letters stay (`c:/users/alek`). `\\?\UNC\server\share`
+/// becomes `//server/share`.
 pub fn normalize_path(path: &str) -> String {
-    let mut p = path.trim().replace('\\', "/");
-    if let Some(stripped) = p.strip_prefix("//?/") {
-        p = stripped.to_string();
-    }
-    if let Some(stripped) = p.strip_prefix("//./") {
-        p = stripped.to_string();
-    }
-    // UNC or already-forward form of \\?\
-    if let Some(stripped) = p.strip_prefix("\\\\?\\") {
-        p = stripped.replace('\\', "/");
-    }
+    let mut p = pretty_path(path).replace('\\', "/");
     p = p.to_lowercase();
     while p.ends_with('/') && p.len() > 3 {
         p.pop();
     }
     p
+}
+
+/// Strip a Windows verbatim prefix for display and storage, without
+/// lowercasing. `\\?\C:\foo` → `C:\foo`. `\\?\UNC\server\share` →
+/// `\\server\share`. Other paths are returned unchanged (trimmed).
+pub fn pretty_path(path: &str) -> String {
+    let raw = path.trim();
+    if raw.is_empty() {
+        return String::new();
+    }
+    let slashy = raw.replace('\\', "/");
+    if let Some(rest) = strip_ascii_prefix(&slashy, "//?/UNC/")
+        .or_else(|| strip_ascii_prefix(&slashy, "//./UNC/"))
+    {
+        return format!(r"\\{}", rest.trim_start_matches('/').replace('/', "\\"));
+    }
+    if let Some(rest) = strip_ascii_prefix(&slashy, "//?/")
+        .or_else(|| strip_ascii_prefix(&slashy, "//./"))
+    {
+        // Drive path: `C:/Users/...` — keep backslashes if the input had them.
+        if raw.contains('\\') {
+            return rest.replace('/', "\\");
+        }
+        return rest.to_string();
+    }
+    raw.to_string()
+}
+
+pub fn pretty_pathbuf(path: &std::path::Path) -> std::path::PathBuf {
+    let s = path.to_string_lossy();
+    std::path::PathBuf::from(pretty_path(&s))
+}
+
+fn strip_ascii_prefix<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
+    if s.len() >= prefix.len() && s[..prefix.len()].eq_ignore_ascii_case(prefix) {
+        Some(&s[prefix.len()..])
+    } else {
+        None
+    }
+}
+
+/// Editor / agent config files we always keep as High, even when they live
+/// under an otherwise-ignored state directory.
+fn is_privileged_agent_config(norm: &str) -> bool {
+    let name = file_name(norm);
+    if name == "claude.md" || name == "mcp.json" {
+        return true;
+    }
+    if name == "keybindings.json" && (norm.contains("/user/keybindings.json") || norm.ends_with("/keybindings.json")) {
+        return norm.contains("/code/")
+            || norm.contains("/cursor/")
+            || norm.contains("/windsurf/")
+            || norm.contains("/.vscode/")
+            || norm.contains("/.cursor/");
+    }
+    let is_user_settings = (name == "settings.json" || name == "settings.local.json")
+        && (norm.contains("/user/settings.json")
+            || norm.contains("/.claude/settings.json")
+            || norm.contains("/.claude/settings.local.json")
+            || norm.contains("/.vscode/settings.json")
+            || norm.contains("/.cursor/settings.json")
+            || norm.contains("/windsurf/user/settings.json"));
+    if is_user_settings
+        && !norm.contains("/workspacestorage/")
+        && !norm.contains("/globalstorage/")
+    {
+        return true;
+    }
+    if norm.contains("/.codex/config.toml") || norm.ends_with("/.codex/config.toml") {
+        return true;
+    }
+    if norm.contains("/.claude/hooks/") {
+        return true;
+    }
+    false
 }
 
 pub fn is_within(child: &str, parent: &str) -> bool {
@@ -571,6 +667,24 @@ mod tests {
             "c:/users/alek/file.txt"
         );
         assert_eq!(normalize_path("C:/Users/Alek/"), "c:/users/alek");
+        assert_eq!(
+            normalize_path(r"\\?\UNC\server\share\file.txt"),
+            "//server/share/file.txt"
+        );
+    }
+
+    #[test]
+    fn pretty_path_strips_verbatim_prefix_and_keeps_unc() {
+        assert_eq!(
+            pretty_path(r"\\?\C:\Users\Alek\src"),
+            r"C:\Users\Alek\src"
+        );
+        assert_eq!(pretty_path(r"C:\Users\Alek\src"), r"C:\Users\Alek\src");
+        assert_eq!(
+            pretty_path(r"\\?\UNC\server\share\repo"),
+            r"\\server\share\repo"
+        );
+        assert_eq!(pretty_path("  /home/alek/src  "), "/home/alek/src");
     }
 
     #[test]
@@ -743,6 +857,85 @@ ignore_globs = ["**/only-this/**"]
         match engine.classify_path(r"C:\work\app\vendor\x.c", ChangeKind::Create) {
             PathDecision::Ignore { .. } => {}
             other => panic!("expected ignore, got {other:?}"),
+        }
+    }
+
+
+    fn classify_dir(path: &str, kind: ChangeKind) -> PathDecision {
+        engine().classify(path, kind, true)
+    }
+
+    fn classify_file(path: &str, kind: ChangeKind) -> PathDecision {
+        engine().classify(path, kind, false)
+    }
+
+    #[test]
+    fn directory_metadata_overwrite_is_info_even_under_roaming() {
+        match classify_dir(
+            r"C:\Users\Alek\AppData\Roaming\MyApp",
+            ChangeKind::DataOverwrite,
+        ) {
+            PathDecision::Keep { severity, reason } => {
+                assert_eq!(severity, Severity::Info, "{reason}");
+                assert!(reason.contains("directory metadata"), "{reason}");
+            }
+            PathDecision::Ignore { reason } => panic!("should be info, not ignore: {reason}"),
+        }
+        // Creates/deletes/renames of directories stay High.
+        match classify_dir(
+            r"C:\Users\Alek\AppData\Roaming\MyApp\NewFolder",
+            ChangeKind::Create,
+        ) {
+            PathDecision::Keep { severity, .. } => assert_eq!(severity, Severity::High),
+            PathDecision::Ignore { reason } => panic!("dir create should be kept: {reason}"),
+        }
+    }
+
+    #[test]
+    fn editor_state_dirs_are_ignored_but_settings_stay_high() {
+        for path in [
+            r"C:\Users\Alek\AppData\Roaming\Code\User\workspaceStorage\abc123\state.vscdb",
+            r"C:\Users\Alek\AppData\Roaming\Code\User\globalStorage\storage.json",
+            r"C:\Users\Alek\AppData\Roaming\Code\logs\2026-11-09\window1\renderer.log",
+            r"C:\Users\Alek\AppData\Roaming\Code\Cache\Cache_Data\f",
+            r"C:\Users\Alek\AppData\Roaming\Cursor\User\workspaceStorage\abc\state.vscdb",
+            r"C:\Users\Alek\AppData\Roaming\Cursor\User\globalStorage\storage.json",
+            r"C:\Users\Alek\AppData\Roaming\Cursor\logs\main.log",
+            r"C:\Users\Alek\AppData\Roaming\Windsurf\User\workspaceStorage\abc\state.vscdb",
+            r"C:\Users\Alek\.claude\projects\foo\session.json",
+            r"C:\Users\Alek\.claude\todos\t.json",
+            r"C:\Users\Alek\.claude\statsig\stats.json",
+            r"C:\Users\Alek\.claude\shell-snapshots\s.sh",
+            r"C:\Users\Alek\.codex\sessions\2026-11-09.jsonl",
+            r"C:\Users\Alek\.codex\log\codex.log",
+            r"C:\Users\Alek\.cursor\ai-tracking\x",
+            r"C:\Users\Alek\.vscode\extensions\foo\logs\ext.log",
+        ] {
+            match classify_file(path, ChangeKind::DataOverwrite) {
+                PathDecision::Ignore { .. } => {}
+                PathDecision::Keep { severity, reason } => {
+                    panic!("expected ignore for {path}, got {severity}: {reason}")
+                }
+            }
+        }
+
+        for path in [
+            r"C:\Users\Alek\AppData\Roaming\Code\User\settings.json",
+            r"C:\Users\Alek\AppData\Roaming\Code\User\keybindings.json",
+            r"C:\Users\Alek\AppData\Roaming\Cursor\User\settings.json",
+            r"C:\Users\Alek\AppData\Roaming\Cursor\User\mcp.json",
+            r"C:\Users\Alek\.cursor\mcp.json",
+            r"C:\Users\Alek\.claude\settings.json",
+            r"C:\Users\Alek\.claude\hooks\pre.sh",
+            r"C:\Users\Alek\src\other\CLAUDE.md",
+            r"C:\Users\Alek\.codex\config.toml",
+        ] {
+            match classify_file(path, ChangeKind::DataOverwrite) {
+                PathDecision::Keep { severity, reason } => {
+                    assert_eq!(severity, Severity::High, "{path}: {reason}");
+                }
+                PathDecision::Ignore { reason } => panic!("expected high for {path}: {reason}"),
+            }
         }
     }
 }

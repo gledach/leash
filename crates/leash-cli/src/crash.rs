@@ -42,7 +42,16 @@ fn panic_hook(info: &PanicHookInfo<'_>) {
     crate::debug_log::log(format!("panic: {info} (wrote {})", path.display()));
 
     if GUI_MODE.load(Ordering::SeqCst) {
-        show_panic_dialog(&path, &info.to_string());
+        // Never MessageBox on the panicking (often GPUI) thread: it pumps a
+        // nested message loop and can re-enter App::borrow_mut.
+        let path_for_ui = path.clone();
+        let summary = info.to_string();
+        if let Ok(handle) = std::thread::Builder::new()
+            .name("leash-panic-ui".into())
+            .spawn(move || show_panic_dialog(&path_for_ui, &summary))
+        {
+            let _ = handle.join();
+        }
     } else {
         eprintln!("{body}");
         eprintln!("details written to {}", path.display());

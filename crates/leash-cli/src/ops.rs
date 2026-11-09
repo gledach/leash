@@ -102,7 +102,7 @@ pub fn take_snapshot(
     snap.taken_at = now_local_rfc3339();
     snap.hostname = leash_persist::hostname();
     snap.username = leash_persist::username();
-    snap.repo_path = Some(repo.to_string_lossy().into_owned());
+    snap.repo_path = Some(leash_filter::pretty_path(&repo.to_string_lossy()));
     snap.elevated = leash_usn::is_elevated();
 
     let scan = build_scan_options(repo, data_dir);

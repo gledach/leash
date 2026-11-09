@@ -108,10 +108,12 @@ pub struct FileEvent {
 
 impl FileEvent {
     pub fn display_path(&self) -> String {
-        self.path
+        let raw = self
+            .path
             .clone()
             .or_else(|| self.old_path.clone())
-            .unwrap_or_else(|| self.name.clone())
+            .unwrap_or_else(|| self.name.clone());
+        leash_filter::pretty_path(&raw)
     }
 }
 

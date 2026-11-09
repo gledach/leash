@@ -77,7 +77,7 @@ impl UiPrefs {
     }
 
     pub fn remember_repo(&mut self, path: &Path) {
-        let s = path.to_string_lossy().to_string();
+        let s = leash_filter::pretty_path(&path.to_string_lossy());
         if !s.trim().is_empty() {
             self.last_repo_path = Some(s);
         }
@@ -107,16 +107,16 @@ pub fn resolve_repo_path(
 ) -> PathBuf {
     if let Some(p) = explicit {
         if !p.as_os_str().is_empty() {
-            return p.to_path_buf();
+            return leash_filter::pretty_pathbuf(p);
         }
     }
     if let Some(s) = session_repo.map(str::trim).filter(|s| !s.is_empty()) {
-        return PathBuf::from(s);
+        return PathBuf::from(leash_filter::pretty_path(s));
     }
     if let Some(s) = last_pref.map(str::trim).filter(|s| !s.is_empty()) {
-        return PathBuf::from(s);
+        return PathBuf::from(leash_filter::pretty_path(s));
     }
-    cwd.to_path_buf()
+    leash_filter::pretty_pathbuf(cwd)
 }
 
 #[cfg(test)]
@@ -181,6 +181,19 @@ mod tests {
         assert_eq!(
             resolve_repo_path(None, None, None, cwd),
             PathBuf::from("/tmp/cwd")
+        );
+    }
+
+
+    #[test]
+    fn remember_repo_strips_verbatim_prefix() {
+        let mut prefs = UiPrefs::default();
+        prefs.remember_repo(Path::new(r"\\?\C:\src\demo"));
+        assert_eq!(prefs.last_repo_path.as_deref(), Some(r"C:\src\demo"));
+        let cwd = Path::new(r"\\?\C:\cwd");
+        assert_eq!(
+            resolve_repo_path(None, Some(r"\\?\C:\sess"), None, cwd),
+            PathBuf::from(r"C:\sess")
         );
     }
 }

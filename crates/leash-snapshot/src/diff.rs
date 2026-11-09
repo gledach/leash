@@ -151,7 +151,7 @@ fn collect_file_findings(
         if !seen.insert(key) {
             continue;
         }
-        match engine.classify_path(&path, ev.kind) {
+        match engine.classify(&path, ev.kind, ev.is_dir) {
             PathDecision::Ignore { reason } => ignored.push(&path, &reason),
             PathDecision::Keep { severity, reason } => {
                 findings.push(file_finding(ev, severity, reason));
@@ -161,7 +161,7 @@ fn collect_file_findings(
 }
 
 fn file_finding(ev: FileEvent, severity: Severity, reason: String) -> Finding {
-    let path = ev.display_path();
+    let path = leash_filter::pretty_path(&ev.display_path());
     let kind = ev.kind.as_str();
     let title = if ev.is_dir {
         format!("Directory {kind}")

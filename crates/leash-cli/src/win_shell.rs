@@ -7,7 +7,7 @@
 #![cfg(windows)]
 
 use crate::app_mode::{
-    classify_elevation, elevation_user_message, is_user_cancelled, shell_friendly_path,
+    classify_elevation, elevation_user_message, is_user_cancelled,
     ElevationResult,
 };
 use crate::debug_log;
@@ -248,7 +248,7 @@ pub fn current_module_path() -> Result<PathBuf> {
     }
     let wide = &buf[..n as usize];
     let raw = String::from_utf16_lossy(wide);
-    Ok(PathBuf::from(shell_friendly_path(&raw)))
+    Ok(leash_filter::pretty_pathbuf(&PathBuf::from(&raw)))
 }
 
 /// Relaunch this exe elevated (UAC) with `--gui` so the new process opens

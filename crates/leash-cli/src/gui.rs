@@ -15,9 +15,8 @@ use chrono::Utc;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable as _, Theme, ThemeMode};
 use gpui_kit::*;
-use leash_filter::Severity;
 use leash_snapshot::{
-    format_elapsed_since, summary_finding_line, DiffReport, SessionInfo, SessionStatus,
+    aggregate_finding_lines, format_elapsed_since, DiffReport, SessionInfo, SessionStatus,
     SessionStore, UiPrefs, UiTheme,
 };
 use std::path::PathBuf;
@@ -118,7 +117,7 @@ impl LeashApp {
         self.sessions = self.store.list_sessions();
         if let Some(running) = self.store.running_session() {
             if let Some(repo) = &running.repo_path {
-                self.repo = PathBuf::from(repo);
+                self.repo = PathBuf::from(leash_filter::pretty_path(repo));
             }
             self.phase = Phase::Running(running);
             return;
@@ -135,16 +134,16 @@ impl LeashApp {
                         report: Box::new(report),
                     };
                     if let Some(repo) = last.repo_path.as_ref() {
-                        self.repo = PathBuf::from(repo);
+                        self.repo = PathBuf::from(leash_filter::pretty_path(repo));
                     }
                 }
             }
         }
         if self.repo.as_os_str().is_empty() {
             if let Some(p) = &self.prefs.last_repo_path {
-                self.repo = PathBuf::from(p);
+                self.repo = PathBuf::from(leash_filter::pretty_path(p));
             } else if let Ok(cwd) = std::env::current_dir() {
-                self.repo = cwd;
+                self.repo = leash_filter::pretty_pathbuf(&cwd);
             }
         }
     }
@@ -178,7 +177,7 @@ impl LeashApp {
             let _ = this.update(cx, |this, cx| {
                 match result {
                     Ok(Ok(Some(path))) => {
-                        this.repo = path;
+                        this.repo = leash_filter::pretty_pathbuf(&path);
                         this.save_prefs();
                         this.note = None;
                     }
@@ -288,20 +287,50 @@ impl LeashApp {
     }
 
     fn elevate(&mut self, cx: &mut Context<Self>, window: &Window) {
+        // ShellExecuteExW("runas") shows a UAC prompt, which pumps a nested
+        // Win32 message loop. If we call it from this click handler, GPUI still
+        // holds the App RefCell (gpui-pre 0.3.12 window.rs:2245 dispatch_event
+        // → async_context.rs:66 update_entity borrow_mut). A WM_PAINT / input
+        // during UAC then panics: "RefCell already borrowed".
+        // Run ShellExecuteExW on a worker thread and only quit after the
+        // result is posted back, via cx.defer, once the click handler has
+        // released the borrow.
         self.save_prefs();
         let owner = window_hwnd(window);
         debug_log::log(format!("restart-as-admin clicked (hwnd={owner:?})"));
-        match relaunch_elevated(owner) {
-            ElevationResult::Started => {
-                self.note = Some(elevation_user_message(&ElevationResult::Started));
-                cx.notify();
-                cx.quit();
-            }
-            other => {
-                self.note = Some(elevation_user_message(&other));
-                cx.notify();
-            }
-        }
+        self.note = Some("Asking Windows for administrator permission…".into());
+        cx.notify();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let _ = std::thread::Builder::new()
+            .name("leash-elevate".into())
+            .spawn(move || {
+                let result = relaunch_elevated(owner);
+                let _ = tx.send(result);
+            });
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { rx.recv() })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                match result {
+                    Ok(ElevationResult::Started) => {
+                        this.note = Some(elevation_user_message(&ElevationResult::Started));
+                        cx.notify();
+                        cx.defer(|cx| cx.quit());
+                    }
+                    Ok(other) => {
+                        this.note = Some(elevation_user_message(&other));
+                        cx.notify();
+                    }
+                    Err(_) => {
+                        this.note = Some("Windows refused to elevate: the request was interrupted.".into());
+                        cx.notify();
+                    }
+                }
+            });
+        })
+        .detach();
     }
 
     fn pin_start_menu(&mut self, cx: &mut Context<Self>) {
@@ -529,17 +558,7 @@ impl LeashApp {
             report.counts.info,
             report.ignored.total
         );
-        let mut findings: Vec<_> = report.findings.iter().collect();
-        findings.sort_by_key(|f| match f.severity {
-            Severity::High => 0,
-            Severity::Medium => 1,
-            Severity::Info => 2,
-        });
-        let top: Vec<String> = findings
-            .iter()
-            .take(5)
-            .map(|f| summary_finding_line(f))
-            .collect();
+        let top = aggregate_finding_lines(&report.findings, 5);
         let id = info.id.clone();
 
         v_flex()
