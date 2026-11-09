@@ -121,7 +121,9 @@ enum SnapWhich {
 }
 
 fn main() -> ExitCode {
-    if std::env::args_os().len() <= 1 {
+    let gui = leash_cli::app_mode::wants_gui(std::env::args_os());
+    leash_cli::crash::install(gui);
+    if gui {
         return run_gui_or_hint();
     }
     attach_parent_console();

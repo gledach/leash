@@ -3469,6 +3469,7 @@ dependencies = [
  "leash-snapshot",
  "leash-usn",
  "libc",
+ "raw-window-handle",
  "serde_json",
  "windows 0.62.2",
 ]

@@ -25,3 +25,4 @@ chrono = { workspace = true }
 windows = { workspace = true }
 gpui-kit = "0.9.1"
 libc = "0.2"
+raw-window-handle = "0.6"

@@ -5,8 +5,11 @@
 use crate::ops::{
     coverage_sentence, is_elevated, load_engine, load_prefs, start_session, stop_session,
 };
+use crate::app_mode::{elevation_user_message, ElevationResult};
+use crate::debug_log;
 use crate::win_shell::{
-    add_start_menu_shortcut, open_path, pick_folder, relaunch_elevated, start_menu_shortcut_path,
+    add_start_menu_shortcut, open_path, pick_folder_async, relaunch_elevated,
+    start_menu_shortcut_path,
 };
 use chrono::Utc;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -21,6 +24,13 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 pub fn run() -> anyhow::Result<()> {
+    let data_dir = leash_snapshot::default_data_dir();
+    debug_log::init(&data_dir);
+    debug_log::log(format!(
+        "gui start version={} exe={:?}",
+        env!("CARGO_PKG_VERSION"),
+        std::env::current_exe()
+    ));
     let mut app = gpui_kit::application();
     app = app.with_assets(gpui_kit::assets::Assets);
     app.run(move |cx| {
@@ -34,10 +44,20 @@ pub fn run() -> anyhow::Result<()> {
             }),
             ..WindowOptions::default()
         };
-        gpui_kit::open_window(options, cx, |_, cx| cx.new(LeashApp::new))
-            .expect("failed to open the leash window");
+        if let Err(err) = gpui_kit::open_window(options, cx, |_, cx| cx.new(LeashApp::new)) {
+            debug_log::log(format!("failed to open the leash window: {err:?}"));
+        }
     });
     Ok(())
+}
+
+fn window_hwnd(window: &Window) -> Option<isize> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let handle = HasWindowHandle::window_handle(window).ok()?;
+    match handle.as_raw() {
+        RawWindowHandle::Win32(h) => Some(h.hwnd.get()),
+        _ => None,
+    }
 }
 
 enum Phase {
@@ -146,17 +166,36 @@ impl LeashApp {
         .detach();
     }
 
-    fn browse(&mut self, cx: &mut Context<Self>) {
-        match pick_folder(None) {
-            Ok(Some(path)) => {
-                self.repo = path;
-                self.save_prefs();
-                self.note = None;
-            }
-            Ok(None) => {}
-            Err(err) => self.note = Some(format!("Could not open the folder picker: {err}")),
-        }
-        cx.notify();
+    fn browse(&mut self, cx: &mut Context<Self>, window: &Window) {
+        let owner = window_hwnd(window);
+        debug_log::log(format!("browse clicked (hwnd={owner:?})"));
+        let rx = pick_folder_async(owner);
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { rx.recv() })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                match result {
+                    Ok(Ok(Some(path))) => {
+                        this.repo = path;
+                        this.save_prefs();
+                        this.note = None;
+                    }
+                    Ok(Ok(None)) => {
+                        // Cancel or empty choice: leave the current folder alone.
+                    }
+                    Ok(Err(err)) => {
+                        this.note = Some(format!("Could not open the folder picker: {err}"));
+                    }
+                    Err(_) => {
+                        this.note = Some("Could not open the folder picker.".into());
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn start(&mut self, cx: &mut Context<Self>) {
@@ -170,6 +209,7 @@ impl LeashApp {
         }
         self.save_prefs();
         self.phase = Phase::Starting;
+        debug_log::log(format!("start snapshot repo={}", self.repo.display()));
         self.note = Some("Taking the before snapshot…".into());
         let repo = self.repo.clone();
         let data_dir = self.data_dir.clone();
@@ -208,6 +248,7 @@ impl LeashApp {
             return;
         }
         self.phase = Phase::Stopping;
+        debug_log::log("stop snapshot");
         self.note = Some("Taking the after snapshot and writing the report…".into());
         let repo = self.repo.clone();
         let data_dir = self.data_dir.clone();
@@ -246,12 +287,18 @@ impl LeashApp {
         cx.notify();
     }
 
-    fn elevate(&mut self, cx: &mut Context<Self>) {
+    fn elevate(&mut self, cx: &mut Context<Self>, window: &Window) {
         self.save_prefs();
-        match relaunch_elevated() {
-            Ok(()) => cx.quit(),
-            Err(err) => {
-                self.note = Some(format!("Could not restart as administrator: {err}"));
+        let owner = window_hwnd(window);
+        debug_log::log(format!("restart-as-admin clicked (hwnd={owner:?})"));
+        match relaunch_elevated(owner) {
+            ElevationResult::Started => {
+                self.note = Some(elevation_user_message(&ElevationResult::Started));
+                cx.notify();
+                cx.quit();
+            }
+            other => {
+                self.note = Some(elevation_user_message(&other));
                 cx.notify();
             }
         }
@@ -370,7 +417,7 @@ impl LeashApp {
                     .child(
                         Button::new("browse")
                             .label("Browse")
-                            .on_click(cx.listener(|this, _, _, cx| this.browse(cx))),
+                            .on_click(cx.listener(|this, _, window, cx| this.browse(cx, window))),
                     ),
             )
     }
@@ -459,7 +506,7 @@ impl LeashApp {
                     .child(
                         Button::new("elevate")
                             .label("Restart as admin for full coverage")
-                            .on_click(cx.listener(|this, _, _, cx| this.elevate(cx))),
+                            .on_click(cx.listener(|this, _, window, cx| this.elevate(cx, window))),
                     )
                     .child(
                         div()

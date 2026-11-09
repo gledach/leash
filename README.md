@@ -6,6 +6,8 @@ When an AI coding agent (Cursor, Claude Code, Codex, and friends) runs on your P
 
 It is read-only. It never deletes, kills, or blocks anything. It does not open a network connection and does not ask for an account.
 
+Diagnostic logs are written to `%LOCALAPPDATA%\leash\leash.log` (small, rotated). If the window ever closes unexpectedly, look at `%LOCALAPPDATA%\leash\crash.log`.
+
 ## What it looks at
 
 - File changes on NTFS/ReFS volumes, via the USN change journal when you run it elevated, grouped as create / delete / rename / data overwrite or extend
