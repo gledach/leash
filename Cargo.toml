@@ -58,6 +58,8 @@ windows = { version = "0.62", features = [
     "Win32_NetworkManagement_IpHelper",
     "Win32_Networking_WinSock",
     "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+    "Win32_System_Console",
     "Win32_UI_WindowsAndMessaging",
 ] }
 
@@ -65,3 +67,9 @@ windows = { version = "0.62", features = [
 lto = "thin"
 codegen-units = 1
 strip = "debuginfo"
+
+
+# Cross-compile from Linux: compile HLSL at runtime with D3DCompile
+# instead of requiring fxc.exe (Windows SDK) during the release build.
+[patch.crates-io]
+gpui-pre-windows = { path = "vendor/gpui-pre-windows" }

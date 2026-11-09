@@ -25,11 +25,16 @@ Rules live in a small, tested module. Copy `config/default-filters.toml` to `%LO
 
 Please read [docs/blind-spots.md](docs/blind-spots.md). The short version: repo-internal edits are ignored on purpose, file reads are invisible, v1 cannot name the process that made a change, USN needs Administrator, the journal can wrap, and filters can hide something planted in a cache or `node_modules`.
 
-## Usage (Windows 11, PowerShell)
+## Usage (Windows 11)
 
-The binary is a single `.exe`. Put it somewhere on your PATH, or call it by full path.
+The binary is a single `leash.exe`. Double-click it in Explorer (or pin it with **Add to Start menu** in the window). A calm window opens: pick the project folder, press **Start**, use the agent as usual, then press **Stop**. Start writes a snapshot to disk, so you can close the window and still press Stop later. **Open report** opens `report.html` in your browser.
 
-For a full file diff, start an **elevated** PowerShell (right-click → Run as administrator):
+If you are not administrator, the window says so and offers **Restart as admin for full coverage**. Without elevation, file coverage is a fallback scan of key folders; startup entries, packages and ports still appear.
+
+The same exe is the CLI when you pass any argument (`leash start`, `leash --help`, …). Double-click does not show a console. From PowerShell the CLI still prints to that terminal (it attaches to the parent console, and it leaves pipes alone so `leash report --json > file` works).
+
+For a full file diff, start an **elevated** window (Restart as admin) or PowerShell (right-click → Run as administrator):
+
 
 ```powershell
 cd C:\path\to\your\repo
@@ -67,6 +72,8 @@ leash diff --markdown .\leash-report.md
 
 Without Administrator, `start` / `stop` still run. File coverage shrinks to the fallback folder scan, and the report will say so. Persistence collectors (Run keys, tasks, services, env, ports, processes, packages) work unelevated, with the usual access limits.
 
+Put `leash.exe` anywhere you like. There is no installer in the portable zip. In the window, **Add to Start menu** creates a normal `.lnk` under your Start menu. An Inno Setup script lives at `installer/leash.iss` for a later Windows build; it is not compiled in this tree.
+
 ## Build
 
 Developed as a Rust workspace. Unit tests for filters, diffs, reports, and parsers run on Linux. The Windows collectors compile behind `cfg(windows)`.
@@ -77,6 +84,8 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo build --release --target x86_64-pc-windows-gnu
 ```
+
+The window uses [GPUI Kit](https://gpui-kit.com/) 0.9.1. `vendor/gpui-pre-windows` is a small patch so release builds can cross-compile from Linux without `fxc.exe`; shaders are compiled at first launch with `D3DCompile`.
 
 The release binary lands at `target/x86_64-pc-windows-gnu/release/leash.exe`. Building natively on Windows with the MSVC toolchain (`x86_64-pc-windows-msvc`) is also fine, and is the simpler path on a Windows 11 machine.
 

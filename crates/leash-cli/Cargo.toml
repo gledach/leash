@@ -23,3 +23,5 @@ chrono = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true }
+gpui-kit = "0.9.1"
+libc = "0.2"

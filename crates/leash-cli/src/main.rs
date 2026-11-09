@@ -1,27 +1,30 @@
 //! leash — read-only before/after snapshots of what an agent changed
 //! on a Windows PC, outside the watched repo.
+//!
+//! No arguments (double-click in Explorer) opens the window.
+//! Any argument keeps the existing CLI.
 
-use anyhow::{Context, Result};
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
+use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
-use leash_filter::{context_from_env, FilterConfig, FilterContext, FilterEngine};
-use leash_packages::collect_packages;
-use leash_persist::{collect as collect_persist, PersistOptions};
-use leash_snapshot::{
-    default_data_dir, diff_snapshots, render_html, render_json, render_markdown, render_summary,
-    render_text, DiffOptions, DiffReport, FileMode, SessionStore, Snapshot, SnapshotLabel,
+use leash_cli::ops::{
+    data_dir_or_default, load_engine, load_or_build_report, load_prefs, mode_label, resolve_repo,
+    session_repo_from_store, start_session, stop_session, take_snapshot,
 };
-use leash_usn::{collect_after, collect_before, ScanOptions};
-use std::path::{Path, PathBuf};
+use leash_cli::open;
+use leash_snapshot::{
+    render_json, render_summary, render_text, SessionStore, SnapshotLabel,
+};
+use std::path::PathBuf;
 use std::process::ExitCode;
-
-mod open;
 
 #[derive(Parser, Debug)]
 #[command(
     name = "leash",
     version,
     about = "Watch what an AI coding agent changes on this Windows PC, outside the repo. Read-only: it never deletes, kills, or blocks anything.",
-    after_help = "Typical session:\n  leash start --path .     # in an elevated PowerShell, from the repo\n  # …run the agent…\n  leash stop               # short summary + paths; open the HTML with: leash open\n  leash last               # reprint the short summary\n  leash open               # open report.html"
+    after_help = "With no arguments, leash opens a window (double-click from Explorer).\nTypical CLI session:\n  leash start --path .     # in an elevated PowerShell, from the repo\n  # …run the agent…\n  leash stop               # short summary + paths; open the HTML with: leash open\n  leash last               # reprint the short summary\n  leash open               # open report.html"
 )]
 struct Cli {
     /// Path of the watched repo (changes inside it are ignored, except .env and similar).
@@ -118,7 +121,11 @@ enum SnapWhich {
 }
 
 fn main() -> ExitCode {
-    match run() {
+    if std::env::args_os().len() <= 1 {
+        return run_gui_or_hint();
+    }
+    attach_parent_console();
+    match run_cli() {
         Ok(code) => code,
         Err(err) => {
             eprintln!("leash: {err}");
@@ -130,33 +137,62 @@ fn main() -> ExitCode {
     }
 }
 
-fn run() -> Result<ExitCode> {
-    let cli = Cli::parse();
-    let data_dir = cli.data_dir.clone().unwrap_or_else(default_data_dir);
-    let store = SessionStore::new(&data_dir);
-    let repo = resolve_repo(cli.path.as_deref().or(cli.repo.as_deref()))?;
-    let (engine, exit_on_high) = load_engine(&cli, &data_dir, &repo)?;
+fn run_gui_or_hint() -> ExitCode {
+    #[cfg(windows)]
+    {
+        match leash_cli::gui::run() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => {
+                // Last-ditch: if we can attach a console, print the error.
+                attach_parent_console();
+                eprintln!("leash: {err}");
+                ExitCode::from(2)
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        eprintln!("leash: the window is Windows-only. Try `leash --help` for the CLI.");
+        ExitCode::from(2)
+    }
+}
 
-    match cli.command {
+fn attach_parent_console() {
+    #[cfg(windows)]
+    {
+        leash_cli::win_shell::attach_parent_console();
+    }
+}
+
+fn run_cli() -> Result<ExitCode> {
+    let cli = Cli::parse();
+    let data_dir = data_dir_or_default(cli.data_dir.as_deref());
+    let store = SessionStore::new(&data_dir);
+    let prefs = load_prefs(&data_dir);
+    let explicit = cli.path.as_deref().or(cli.repo.as_deref());
+
+    match &cli.command {
         Commands::Doctor => {
+            let repo = resolve_repo(explicit, None, prefs.last_repo_path.as_deref())?;
             run_doctor(&data_dir, &repo);
             Ok(ExitCode::SUCCESS)
         }
         Commands::Start => {
-            let id = new_session_id();
-            let paths = store.create(&id)?;
-            let snap = take_snapshot(SnapshotLabel::Before, &id, &repo, &data_dir, None)?;
-            let written = store.write_snapshot(&paths, &snap)?;
-            println!("leash session {id}");
+            let repo = resolve_repo(explicit, None, prefs.last_repo_path.as_deref())?;
+            let started = start_session(&store, &repo, &data_dir)?;
+            println!("leash session {}", started.paths.id);
             println!("repo:    {}", repo.display());
-            println!("files:   {}", mode_label(snap.file_mode, snap.elevated));
-            println!("saved:   {}", written.display());
-            if !snap.elevated {
+            println!(
+                "files:   {}",
+                mode_label(started.snap.file_mode, started.snap.elevated)
+            );
+            println!("saved:   {}", started.paths.before().display());
+            if !started.snap.elevated {
                 println!();
                 println!("Note: this process is not elevated. File changes use a fallback scan of priority folders, not the USN journal.");
-                println!("For a fuller picture, open an elevated PowerShell and run `leash start` again.");
+                println!("For a fuller picture, open an elevated PowerShell and run `leash start` again, or use Restart as admin in the window.");
             }
-            for w in &snap.warnings {
+            for w in &started.snap.warnings {
                 eprintln!("warning: {w}");
             }
             println!();
@@ -166,20 +202,31 @@ fn run() -> Result<ExitCode> {
         Commands::Snap { which } => {
             let (label, paths) = match which {
                 SnapWhich::Before => {
-                    let id = new_session_id();
-                    let paths = store.create(&id)?;
-                    (SnapshotLabel::Before, paths)
+                    let repo = resolve_repo(explicit, None, prefs.last_repo_path.as_deref())?;
+                    let started = start_session(&store, &repo, &data_dir)?;
+                    println!(
+                        "session {}  {}  {}",
+                        started.paths.id,
+                        started.snap.taken_at,
+                        started.paths.before().display()
+                    );
+                    for w in &started.snap.warnings {
+                        eprintln!("warning: {w}");
+                    }
+                    return Ok(ExitCode::SUCCESS);
                 }
                 SnapWhich::After => {
                     let paths = store.open(None)?;
                     (SnapshotLabel::After, paths)
                 }
             };
-            let before = if matches!(label, SnapshotLabel::After) {
-                Some(store.read_before(&paths)?)
-            } else {
-                None
-            };
+            let session_repo = store.read_before(&paths).ok().and_then(|s| s.repo_path);
+            let repo = resolve_repo(
+                explicit,
+                session_repo.as_deref(),
+                prefs.last_repo_path.as_deref(),
+            )?;
+            let before = store.read_before(&paths).ok();
             let snap = take_snapshot(label, &paths.id, &repo, &data_dir, before.as_ref())?;
             let written = store.write_snapshot(&paths, &snap)?;
             println!(
@@ -200,34 +247,24 @@ fn run() -> Result<ExitCode> {
             open,
             markdown,
         } => {
-            let paths = store.open(session.as_deref())?;
-            let before = store.read_before(&paths).with_context(|| {
-                format!(
-                    "session {} has no before snapshot; run `leash start` first",
-                    paths.id
-                )
-            })?;
-            let after = take_snapshot(
-                SnapshotLabel::After,
-                &paths.id,
-                &repo,
-                &data_dir,
-                Some(&before),
+            let session_repo = session_repo_from_store(&store, session.as_deref());
+            let repo = resolve_repo(
+                explicit,
+                session_repo.as_deref(),
+                prefs.last_repo_path.as_deref(),
             )?;
-            store.write_snapshot(&paths, &after)?;
-            finish_report(
-                &store,
+            let (engine, exit_on_high) = load_engine(cli.config.as_deref(), &data_dir, &repo)?;
+            let (paths, report) =
+                stop_session(&store, session.as_deref(), &repo, &data_dir, &engine)?;
+            print_report(
                 &paths,
-                Some((&before, &after)),
-                &engine,
-                &ReportPrint {
-                    json,
-                    verbose,
-                    open_folder: open,
-                    markdown_copy: markdown,
-                    hint_open: true,
-                    exit_on_high,
-                },
+                &report,
+                *json,
+                *verbose,
+                *open,
+                markdown.as_ref(),
+                true,
+                exit_on_high,
             )
         }
         Commands::Diff {
@@ -237,22 +274,26 @@ fn run() -> Result<ExitCode> {
             open,
             markdown,
         } => {
+            let session_repo = session_repo_from_store(&store, session.as_deref());
+            let repo = resolve_repo(
+                explicit,
+                session_repo.as_deref(),
+                prefs.last_repo_path.as_deref(),
+            )?;
+            let (engine, exit_on_high) = load_engine(cli.config.as_deref(), &data_dir, &repo)?;
             let paths = store.open(session.as_deref())?;
             let before = store.read_before(&paths)?;
             let after = store.read_after(&paths)?;
-            finish_report(
-                &store,
+            let report = load_or_build_report(&store, &paths, Some((&before, &after)), &engine)?;
+            print_report(
                 &paths,
-                Some((&before, &after)),
-                &engine,
-                &ReportPrint {
-                    json,
-                    verbose,
-                    open_folder: open,
-                    markdown_copy: markdown,
-                    hint_open: false,
-                    exit_on_high,
-                },
+                &report,
+                *json,
+                *verbose,
+                *open,
+                markdown.as_ref(),
+                false,
+                exit_on_high,
             )
         }
         Commands::Report {
@@ -261,38 +302,37 @@ fn run() -> Result<ExitCode> {
             verbose,
             open,
         } => {
+            let session_repo = session_repo_from_store(&store, session.as_deref());
+            let repo = resolve_repo(
+                explicit,
+                session_repo.as_deref(),
+                prefs.last_repo_path.as_deref(),
+            )?;
+            let (engine, exit_on_high) = load_engine(cli.config.as_deref(), &data_dir, &repo)?;
             let paths = store.open(session.as_deref())?;
-            finish_report(
-                &store,
+            let report = load_or_build_report(&store, &paths, None, &engine)?;
+            print_report(
                 &paths,
+                &report,
+                *json,
+                *verbose,
+                *open,
                 None,
-                &engine,
-                &ReportPrint {
-                    json,
-                    verbose,
-                    open_folder: open,
-                    markdown_copy: None,
-                    hint_open: false,
-                    exit_on_high,
-                },
+                false,
+                exit_on_high,
             )
         }
         Commands::Last { session } => {
+            let session_repo = session_repo_from_store(&store, session.as_deref());
+            let repo = resolve_repo(
+                explicit,
+                session_repo.as_deref(),
+                prefs.last_repo_path.as_deref(),
+            )?;
+            let (engine, exit_on_high) = load_engine(cli.config.as_deref(), &data_dir, &repo)?;
             let paths = store.open(session.as_deref())?;
-            finish_report(
-                &store,
-                &paths,
-                None,
-                &engine,
-                &ReportPrint {
-                    json: false,
-                    verbose: false,
-                    open_folder: false,
-                    markdown_copy: None,
-                    hint_open: false,
-                    exit_on_high,
-                },
-            )
+            let report = load_or_build_report(&store, &paths, None, &engine)?;
+            print_report(&paths, &report, false, false, false, None, false, exit_on_high)
         }
         Commands::Open {
             md,
@@ -301,11 +341,11 @@ fn run() -> Result<ExitCode> {
             session,
         } => {
             let paths = store.open(session.as_deref())?;
-            let target = if folder {
+            let target = if *folder {
                 paths.dir.clone()
-            } else if json {
+            } else if *json {
                 paths.report_json()
-            } else if md {
+            } else if *md {
                 paths.report_md()
             } else {
                 paths.report_html()
@@ -317,53 +357,45 @@ fn run() -> Result<ExitCode> {
     }
 }
 
-struct ReportPrint {
+#[allow(clippy::too_many_arguments)]
+fn print_report(
+    paths: &leash_snapshot::SessionPaths,
+    report: &leash_snapshot::DiffReport,
     json: bool,
     verbose: bool,
     open_folder: bool,
-    markdown_copy: Option<PathBuf>,
+    markdown_copy: Option<&PathBuf>,
     hint_open: bool,
     exit_on_high: bool,
-}
-
-fn finish_report(
-    store: &SessionStore,
-    paths: &leash_snapshot::SessionPaths,
-    pair: Option<(&Snapshot, &Snapshot)>,
-    engine: &FilterEngine,
-    opts: &ReportPrint,
 ) -> Result<ExitCode> {
-    let report = load_or_build_report(store, paths, pair, engine)?;
-    let md = render_markdown(&report);
-    let html = render_html(&report);
-    store.write_report(paths, &report, &md, &html)?;
-    if let Some(extra) = &opts.markdown_copy {
+    if let Some(extra) = markdown_copy {
         if let Some(parent) = extra.parent() {
             if !parent.as_os_str().is_empty() {
                 std::fs::create_dir_all(parent)?;
             }
         }
-        std::fs::write(extra, &md)?;
+        let md = leash_snapshot::render_markdown(report);
+        std::fs::write(extra, md)?;
         eprintln!("markdown copy: {}", extra.display());
     }
 
-    if opts.json {
-        println!("{}", render_json(&report)?);
-    } else if opts.verbose {
-        print!("{}", render_text(&report));
+    if json {
+        println!("{}", render_json(report)?);
+    } else if verbose {
+        print!("{}", render_text(report));
         print_report_paths(paths);
     } else {
-        print!("{}", render_summary(&report));
+        print!("{}", render_summary(report));
         print_report_paths(paths);
     }
-    if opts.hint_open && !opts.json {
+    if hint_open && !json {
         println!("Open it: leash open");
     }
-    if opts.open_folder {
+    if open_folder {
         open::open_with_default_app(&paths.dir)?;
         eprintln!("opened {}", paths.dir.display());
     }
-    if opts.exit_on_high && report.counts.high > 0 {
+    if exit_on_high && report.counts.high > 0 {
         Ok(ExitCode::from(1))
     } else {
         Ok(ExitCode::SUCCESS)
@@ -376,231 +408,7 @@ fn print_report_paths(paths: &leash_snapshot::SessionPaths) {
     println!("report.md    {}", paths.report_md().display());
 }
 
-fn load_or_build_report(
-    store: &SessionStore,
-    paths: &leash_snapshot::SessionPaths,
-    pair: Option<(&Snapshot, &Snapshot)>,
-    engine: &FilterEngine,
-) -> Result<DiffReport> {
-    if let Some((before, after)) = pair {
-        return Ok(diff_snapshots(before, after, DiffOptions { engine }));
-    }
-    if paths.report_json().exists() {
-        return Ok(store.read_report(paths)?);
-    }
-    let before = store.read_before(paths)?;
-    let after = store.read_after(paths)?;
-    Ok(diff_snapshots(&before, &after, DiffOptions { engine }))
-}
-
-fn take_snapshot(
-    label: SnapshotLabel,
-    session_id: &str,
-    repo: &Path,
-    data_dir: &Path,
-    before: Option<&Snapshot>,
-) -> Result<Snapshot> {
-    let mut snap = Snapshot::new(label, session_id);
-    snap.taken_at = now_rfc3339();
-    snap.hostname = leash_persist::hostname();
-    snap.username = leash_persist::username();
-    snap.repo_path = Some(repo.to_string_lossy().into_owned());
-    snap.elevated = leash_usn::is_elevated();
-
-    let scan = build_scan_options(repo, data_dir);
-    let files = match label {
-        SnapshotLabel::Before => collect_before(&scan),
-        SnapshotLabel::After => {
-            let cursors = before.map(|b| b.usn.as_slice()).unwrap_or(&[]);
-            collect_after(cursors, &scan)
-        }
-    };
-    match files {
-        Ok(col) => {
-            snap.file_mode = col.mode;
-            snap.elevated = col.elevated;
-            snap.usn = col.usn;
-            snap.file_events = col.events;
-            snap.fallback_files = col.fallback_files;
-            snap.warnings.extend(col.warnings);
-        }
-        Err(err) => {
-            snap.file_mode = FileMode::Unavailable;
-            snap.warnings.push(format!("file collection failed: {err}"));
-        }
-    }
-
-    let home = std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))
-        .map(PathBuf::from);
-    let persist = collect_persist(&PersistOptions { home });
-    snap.run_keys = persist.run_keys;
-    snap.scheduled_tasks = persist.scheduled_tasks;
-    snap.services = persist.services;
-    snap.env_user = persist.env_user;
-    snap.env_system = persist.env_system;
-    snap.profiles = persist.profiles;
-    snap.git_configs = persist.git_configs;
-    snap.ssh = persist.ssh;
-    snap.ports = persist.ports;
-    snap.processes = persist.processes;
-    snap.warnings.extend(persist.warnings);
-    snap.packages = collect_packages();
-    snap.warnings.extend(snap.packages.notes.iter().cloned());
-    Ok(snap)
-}
-
-fn build_scan_options(repo: &Path, data_dir: &Path) -> ScanOptions {
-    let home = std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))
-        .map(PathBuf::from);
-    let appdata = std::env::var_os("APPDATA").map(PathBuf::from);
-    let mut roots = Vec::new();
-    let mut extra_files = Vec::new();
-    let mut shallow_roots = Vec::new();
-    if let Some(home) = &home {
-        shallow_roots.push(home.clone());
-        let user_files = leash_persist::collect_user_files(home);
-        extra_files.extend(user_files.profiles.iter().map(|f| PathBuf::from(&f.path)));
-        extra_files.extend(
-            user_files
-                .git_configs
-                .iter()
-                .map(|f| PathBuf::from(&f.path)),
-        );
-        if let Some(cfg) = user_files.ssh.config.as_ref() {
-            extra_files.push(PathBuf::from(&cfg.path));
-        }
-        for name in [
-            "Desktop",
-            "Documents",
-            "src",
-            "source",
-            "projects",
-            "dev",
-            "code",
-            "work",
-            "git",
-            "repos",
-        ] {
-            let p = home.join(name);
-            if p.is_dir() {
-                roots.push(p);
-            }
-        }
-    }
-    if let Some(app) = &appdata {
-        roots.push(app.clone());
-        roots.push(app.join("Microsoft/Windows/Start Menu/Programs/Startup"));
-    }
-    if let Some(program_data) = std::env::var_os("PROGRAMDATA").map(PathBuf::from) {
-        roots.push(program_data.join("Microsoft/Windows/Start Menu/Programs/StartUp"));
-    }
-    // Sibling projects of the watched repo.
-    if let Some(parent) = repo.parent() {
-        if parent != Path::new("") {
-            roots.push(parent.to_path_buf());
-        }
-    }
-    // Walking the whole user profile is too large; the walker has a depth cap and skip list.
-    // Still, prefer not to walk the entire home recursively as a first root if it is huge:
-    // keep it, but the skip list drops AppData\Local noise only when named Temp/Cache/etc.
-    // Limit home itself to depth via walker MAX_DEPTH.
-    let _ = data_dir;
-    // Dedup
-    roots.sort();
-    roots.dedup();
-    ScanOptions {
-        roots,
-        shallow_roots,
-        extra_files,
-    }
-}
-
-fn load_engine(cli: &Cli, data_dir: &Path, repo: &Path) -> Result<(FilterEngine, bool)> {
-    let config_path = cli.config.clone().or_else(|| {
-        let p = data_dir.join("config.toml");
-        p.exists().then_some(p)
-    });
-    let config = if let Some(path) = config_path {
-        let text = std::fs::read_to_string(&path)
-            .with_context(|| format!("reading {}", path.display()))?;
-        FilterConfig::load_overlay(&text).with_context(|| format!("parsing {}", path.display()))?
-    } else {
-        FilterConfig::default_rules()
-    };
-    let exit_on_high = config.exit_on_high;
-    let context = build_context(repo, data_dir);
-    let engine = FilterEngine::new(config, context)?;
-    Ok((engine, exit_on_high))
-}
-
-fn build_context(repo: &Path, data_dir: &Path) -> FilterContext {
-    let home = std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))
-        .map(PathBuf::from);
-    let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
-    let appdata = std::env::var_os("APPDATA").map(PathBuf::from);
-    let temp = std::env::var_os("TEMP")
-        .or_else(|| std::env::var_os("TMP"))
-        .map(PathBuf::from);
-    let mut other = Vec::new();
-    if let Some(parent) = repo.parent() {
-        if let Ok(rd) = std::fs::read_dir(parent) {
-            for ent in rd.flatten() {
-                let p = ent.path();
-                if p == repo {
-                    continue;
-                }
-                if leash_filter::looks_like_project_root(&p) {
-                    other.push(p);
-                }
-            }
-        }
-    }
-    context_from_env(
-        Some(repo),
-        Some(data_dir),
-        home.as_deref(),
-        local.as_deref(),
-        appdata.as_deref(),
-        temp.as_deref(),
-        other,
-    )
-}
-
-fn resolve_repo(explicit: Option<&Path>) -> Result<PathBuf> {
-    if let Some(p) = explicit {
-        return Ok(std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()));
-    }
-    let cwd = std::env::current_dir().context("current directory")?;
-    Ok(std::fs::canonicalize(&cwd).unwrap_or(cwd))
-}
-
-fn new_session_id() -> String {
-    let now = chrono::Local::now();
-    now.format("%Y%m%d-%H%M%S").to_string()
-}
-
-fn now_rfc3339() -> String {
-    chrono::Local::now().to_rfc3339()
-}
-
-fn mode_label(mode: FileMode, elevated: bool) -> String {
-    let base = match mode {
-        FileMode::Usn => "USN change journal",
-        FileMode::FallbackScan => "fallback folder scan (mtime/hash)",
-        FileMode::Mixed => "USN journal + fallback folder scan",
-        FileMode::Unavailable => "not collected",
-    };
-    if elevated {
-        base.to_string()
-    } else {
-        format!("{base}; not elevated")
-    }
-}
-
-fn run_doctor(data_dir: &Path, repo: &Path) {
+fn run_doctor(data_dir: &std::path::Path, repo: &std::path::Path) {
     println!("leash doctor");
     println!("  version:    {}", env!("CARGO_PKG_VERSION"));
     println!("  os:         {}", std::env::consts::OS);
