@@ -3,6 +3,17 @@
 //!
 //! COM is never initialized or uninitialized on the GPUI UI thread.
 //! The folder dialog and shortcut creation run on a dedicated STA thread.
+//!
+//! Never call ShellExecute, ShellExecuteEx, MessageBox, IFileOpenDialog::Show,
+//! or any other Win32 API that can pump a nested message loop from a GPUI
+//! click listener or from the UI thread. GPUI holds an App RefCell during
+//! event dispatch (`window.rs` dispatch_event → `async_context.rs`
+//! update_entity). If that call pumps messages, the window procedure can run
+//! a spawned task such as `LeashApp::tick_elapsed`, which tries to borrow the
+//! same RefCell and panics: "RefCell already borrowed". The UAC "Restart as
+//! admin" bug and the Examples-button crash were the same class. Route those
+//! APIs through [`dispatch_shell_work`] (STA worker thread) and report the
+//! result back with a channel plus `cx.spawn`.
 
 #![cfg(windows)]
 
@@ -105,6 +116,52 @@ impl Drop for ComGuard {
     }
 }
 
+
+/// Run `work` on a dedicated STA worker thread and return a channel for the
+/// result. Use this from GPUI listeners instead of calling any Win32 API that
+/// can pump a nested message loop. See the module docs for why.
+pub fn dispatch_shell_work<T, F>(name: &'static str, work: F) -> mpsc::Receiver<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    let (tx, rx) = mpsc::channel();
+    let _ = thread::Builder::new()
+        .name(name.into())
+        .spawn(move || {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _com = ComGuard::init_sta();
+                work()
+            }));
+            match result {
+                Ok(value) => {
+                    if tx.send(value).is_err() {
+                        debug_log::log(format!("{name}: UI no longer listening for the result"));
+                    }
+                }
+                Err(payload) => {
+                    debug_log::log(format!("{name}: worker thread panicked: {payload:?}"));
+                }
+            }
+        });
+    rx
+}
+
+/// Open a file or folder on a worker thread (ShellExecute pumps messages).
+pub fn open_path_async(path: PathBuf) -> mpsc::Receiver<Result<()>> {
+    debug_log::log(format!(
+        "open_path: dispatched to worker thread ({})",
+        path.display()
+    ));
+    dispatch_shell_work("leash-open-path", move || crate::open::open_with_default_app(&path))
+}
+
+/// Open a URL on a worker thread (ShellExecute pumps messages).
+pub fn open_url_async(url: String) -> mpsc::Receiver<Result<()>> {
+    debug_log::log("open_url: dispatched to worker thread");
+    dispatch_shell_work("leash-open-url", move || crate::open::open_url(&url))
+}
+
 /// Run `work` on a fresh STA thread and return its result. The GPUI thread
 /// is not used for COM init or for the folder dialog.
 fn run_on_sta<T, F>(name: &'static str, work: F) -> Result<T>
@@ -153,24 +210,7 @@ pub fn pick_folder(owner: Option<isize>) -> Result<Option<PathBuf>> {
 /// Same picker, but intended to be started from an async task so the GPUI
 /// message loop is not blocked waiting on the user.
 pub fn pick_folder_async(owner: Option<isize>) -> mpsc::Receiver<Result<Option<PathBuf>>> {
-    let (tx, rx) = mpsc::channel();
-    let _ = thread::Builder::new()
-        .name("leash-folder-dialog".into())
-        .spawn(move || {
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let _com = ComGuard::init_sta();
-                pick_folder_sta(owner)
-            }))
-            .unwrap_or_else(|_| {
-                Err(anyhow!(
-                    "the folder picker hit an unexpected error (see crash.log if present)"
-                ))
-            });
-            if tx.send(result).is_err() {
-                debug_log::log("folder picker: UI no longer listening for the result");
-            }
-        });
-    rx
+    dispatch_shell_work("leash-folder-dialog", move || pick_folder_sta(owner))
 }
 
 fn pick_folder_sta(owner: Option<isize>) -> Result<Option<PathBuf>> {
@@ -332,6 +372,12 @@ pub fn relaunch_elevated(owner: Option<isize>) -> ElevationResult {
 /// Create `%APPDATA%\Microsoft\Windows\Start Menu\Programs\leash.lnk`.
 pub fn add_start_menu_shortcut() -> Result<PathBuf> {
     run_on_sta("leash-start-menu", add_start_menu_shortcut_sta)?
+}
+
+/// Same as [`add_start_menu_shortcut`], but does not block the calling thread.
+/// Use this from a GPUI listener.
+pub fn add_start_menu_shortcut_async() -> std::sync::mpsc::Receiver<Result<PathBuf>> {
+    dispatch_shell_work("leash-start-menu", add_start_menu_shortcut_sta)
 }
 
 fn add_start_menu_shortcut_sta() -> Result<PathBuf> {

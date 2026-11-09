@@ -1,7 +1,15 @@
 # leash examples
 
-Copy-paste recipes for PowerShell. Attribution (`leash run`, `--attach`, `--pid`)
-needs an elevated window: right-click PowerShell → Run as administrator.
+The most reliable way to watch an agent is to let leash start it:
+
+```powershell
+leash run --path . -- claude
+```
+
+leash starts the agent itself, so there is nothing to pick from a process list.
+Use `--attach` or the window only as a fallback when the agent is already
+running inside an editor. Attribution (`leash run`, `--attach`, `--pid`) needs
+an elevated window: right-click PowerShell → Run as administrator.
 
 Agent flags change. These were checked in November 2026 against current CLI
 docs; if a flag errors, run the agent's own `--help` and keep the `leash run`
@@ -13,7 +21,8 @@ it watching — it records what happened, it does not block the agent.
 ## AI coding agents
 
 ### Claude Code (normal)
-Start Claude in this folder and attribute everything it and its children touch.
+Recommended. Start Claude in this folder and attribute everything it and its
+children touch. Prefer this over attaching to a running editor.
 
 ```powershell
 leash run --path . -- claude
@@ -67,12 +76,16 @@ leash run --path . -- aider
 leash run --path . -- aider --yes-always
 ```
 
-## Attach to something already open
+## Attach to something already open (fallback)
+
+Prefer `leash run -- claude` when you can. Use these only when the agent is
+already running, for example inside a VS Code terminal.
 
 ### Cursor, VS Code or Windsurf
 Attaches to the editor process and every descendant: terminals, extension hosts,
 and an agent such as Claude running in the integrated terminal. Use `leash ps`
-if you are not sure what is visible.
+if you are not sure what is visible (rows include the folder, start time and a
+command-line tail, so several `node.exe` or `Code.exe` entries can be told apart).
 
 ```powershell
 leash start --path . --attach cursor

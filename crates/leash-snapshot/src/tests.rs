@@ -244,6 +244,7 @@ fn packages_ports_processes_and_ssh_hash() {
         exe: None,
         command_line: None,
         create_time: Some(100),
+        cwd: None,
     });
     let mut after = base_snap(SnapshotLabel::After);
     after.packages.npm = vec![Package {
@@ -277,6 +278,7 @@ fn packages_ports_processes_and_ssh_hash() {
         exe: Some(r"C:\Users\Alek\odd.exe".into()),
         command_line: Some(r"C:\Users\Alek\odd.exe --serve".into()),
         create_time: Some(200),
+        cwd: None,
     });
     let r = report(&before, &after);
     assert!(r
@@ -601,6 +603,7 @@ pub(crate) fn sample_visual_report() -> DiffReport {
         exe: Some(r"C:\Users\Alek\odd.exe".into()),
         command_line: Some(r"C:\Users\Alek\odd.exe --serve".into()),
         create_time: Some(200),
+        cwd: None,
     });
     after.ssh.authorized_keys = Some(HashedFile {
         path: r"C:\Users\Alek\.ssh\authorized_keys".into(),

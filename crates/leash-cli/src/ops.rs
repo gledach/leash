@@ -508,18 +508,26 @@ pub fn resolve_attach_name(name: &str) -> Result<AttachOutcome> {
 /// Text for `leash ps` / `leash list`.
 pub fn format_process_list() -> String {
     let views = leash_attrib::live_views();
-    let list = leash_attrib::discover_candidates(&views);
-    if list.is_empty() {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .ok();
+    let model = leash_attrib::build_picker(&views, now, home.as_deref());
+    if model.agents_and_editors.is_empty() {
         return "No known editors or coding agents were visible.
 If you expected one, run `leash ps` from an elevated window (command lines can be hidden otherwise),
 or pass `leash start --pid <pid>`.
+The most reliable path is still `leash run --path . -- claude` (leash starts the agent itself).
 "
             .into();
     }
     let mut s = String::from("leash ps  (known editors and coding agents)
 
 ");
-    s.push_str(&leash_attrib::format_ps(&list));
+    s.push_str(&leash_attrib::format_ps_rows(&model));
     s.push('\n');
     s
 }

@@ -74,11 +74,11 @@ leash stop
 leash open              # report.html in your browser
 leash last              # reprint the short summary
 
-# Per-process attribution (elevated PowerShell). leash starts the agent,
-# watches its process tree, and splits the report into "your agent did this",
+# Recommended (elevated PowerShell): leash starts the agent itself, so
+# there is nothing to pick. The report splits "your agent did this",
 # "other apps changed this meanwhile", and "unattributed".
 leash run --path . -- claude
-# or attach to something already running:
+# Fallback, if the agent is already running inside an editor:
 leash start --path . --attach cursor
 leash start --path . --pid 1234
 # …then, when you are done…
@@ -117,22 +117,26 @@ way around. They read and write the same sessions.
 
 ## Examples
 
-Copy-paste recipes, including Claude in YOLO mode, Codex, Gemini, Aider, and
-attaching to Cursor or VS Code, live at <https://gledach.de/leash/examples/>
-and in `leash examples` (elevated PowerShell for attribution):
+The most reliable path is `leash run --path . -- claude` (or another agent):
+leash starts it, so you do not have to pick a process. Copy-paste recipes,
+including Claude in YOLO mode, Codex, Gemini and Aider, live at
+<https://gledach.de/leash/examples/> and in `leash examples` (elevated
+PowerShell for attribution). Attaching is the fallback when an agent is
+already running inside an editor.
 
 ```powershell
 leash run --path . -- claude
 leash run --path . -- claude --dangerously-skip-permissions
+# fallback, if it is already running:
 leash start --path . --attach vscode
 leash start --path . --attach cursor
 ```
 
-`leash ps` lists the editors and agents leash can see (image name, window
-title and command line), so you can tell whether VS Code or a `node.exe`
-Claude shim was detected. Agent flags change; if one errors, check that
-CLI's own `--help`. The Examples page notes which flags were current in
-November 2026.
+`leash ps` lists the editors and agents leash can see, with a friendly
+label, working directory, start time, pid and a command-line tail, so
+several `node.exe` or `Code.exe` rows can be told apart. Agent flags
+change; if one errors, check that CLI's own `--help`. The Examples page
+notes which flags were current in November 2026.
 
 ## What it looks at
 

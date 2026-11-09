@@ -672,7 +672,7 @@ pub fn collect_processes() -> anyhow::Result<Vec<ProcessEntry>> {
                 let pid = entry.th32ProcessID;
                 let ppid = entry.th32ParentProcessID;
                 let name = utf16_to_string(&entry.szExeFile);
-                let (exe, cmd, created) = process_details(pid, &name);
+                let (exe, cmd, created, cwd) = process_details(pid, &name);
                 out.push(ProcessEntry {
                     pid,
                     ppid: Some(ppid),
@@ -680,6 +680,7 @@ pub fn collect_processes() -> anyhow::Result<Vec<ProcessEntry>> {
                     exe,
                     command_line: cmd,
                     create_time: created,
+                    cwd,
                 });
                 if Process32NextW(snap, &mut entry).is_err() {
                     break;
@@ -691,9 +692,9 @@ pub fn collect_processes() -> anyhow::Result<Vec<ProcessEntry>> {
     }
 }
 
-fn process_details(pid: u32, name: &str) -> (Option<String>, Option<String>, Option<i64>) {
+fn process_details(pid: u32, name: &str) -> (Option<String>, Option<String>, Option<i64>, Option<String>) {
     if pid == 0 {
-        return (None, None, None);
+        return (None, None, None, None);
     }
     unsafe {
         let access =
@@ -710,7 +711,7 @@ fn process_details(pid: u32, name: &str) -> (Option<String>, Option<String>, Opt
                             err.0
                         ));
                     }
-                    return (None, None, None);
+                    return (None, None, None, None);
                 }
             },
         };
@@ -735,8 +736,13 @@ fn process_details(pid: u32, name: &str) -> (Option<String>, Option<String>, Opt
                 "pid {pid} ({name}): command line unavailable (NtQueryInformationProcess); often access denied unless elevated"
             ));
         }
+        let cwd = process_cwd(handle);
+        if cwd.is_none() && pid > 4 {
+            // Not every process exposes a cwd; only log when we already had a handle.
+            // Keep this quieter than command-line failures: many system processes have no usable PEB.
+        }
         let _ = CloseHandle(handle);
-        (exe, cmd, created)
+        (exe, cmd, created, cwd)
     }
 }
 
@@ -751,6 +757,112 @@ fn process_create_time(handle: HANDLE) -> Option<i64> {
         // FILETIME is 100-ns intervals since 1601-01-01.
         let unix = (ticks as i64 / 10_000_000) - 11_644_473_600;
         Some(unix)
+    }
+}
+
+
+fn process_cwd(handle: HANDLE) -> Option<String> {
+    // x64 PEB / RTL_USER_PROCESS_PARAMETERS offsets. leash ships only as x86_64.
+    const PROCESS_BASIC_INFORMATION: u32 = 0;
+    const PEB_PROCESS_PARAMETERS_OFFSET: usize = 0x20;
+    const PARAMS_CURRENT_DIRECTORY_OFFSET: usize = 0x38;
+    type NtQueryInformationProcess =
+        unsafe extern "system" fn(HANDLE, u32, *mut core::ffi::c_void, u32, *mut u32) -> i32;
+    type NtReadVirtualMemory = unsafe extern "system" fn(
+        HANDLE,
+        *const core::ffi::c_void,
+        *mut core::ffi::c_void,
+        usize,
+        *mut usize,
+    ) -> i32;
+    #[repr(C)]
+    struct ProcessBasicInformation {
+        _reserved1: *mut core::ffi::c_void,
+        peb_base: *mut core::ffi::c_void,
+        _reserved2: [*mut core::ffi::c_void; 2],
+        _pid: usize,
+        _reserved3: *mut core::ffi::c_void,
+    }
+    unsafe {
+        let module =
+            windows::Win32::System::LibraryLoader::GetModuleHandleW(windows::core::w!("ntdll.dll"))
+                .ok()?;
+        let q = windows::Win32::System::LibraryLoader::GetProcAddress(
+            module,
+            windows::core::s!("NtQueryInformationProcess"),
+        )?;
+        let r = windows::Win32::System::LibraryLoader::GetProcAddress(
+            module,
+            windows::core::s!("NtReadVirtualMemory"),
+        )?;
+        let ntqip: NtQueryInformationProcess = mem::transmute(q);
+        let ntrvm: NtReadVirtualMemory = mem::transmute(r);
+        let mut pbi = ProcessBasicInformation {
+            _reserved1: core::ptr::null_mut(),
+            peb_base: core::ptr::null_mut(),
+            _reserved2: [core::ptr::null_mut(); 2],
+            _pid: 0,
+            _reserved3: core::ptr::null_mut(),
+        };
+        let mut ret = 0u32;
+        let status = ntqip(
+            handle,
+            PROCESS_BASIC_INFORMATION,
+            (&mut pbi as *mut ProcessBasicInformation).cast(),
+            mem::size_of::<ProcessBasicInformation>() as u32,
+            &mut ret,
+        );
+        if status < 0 || pbi.peb_base.is_null() {
+            return None;
+        }
+        let read = |addr: *const core::ffi::c_void, buf: &mut [u8]| -> bool {
+            let mut n = 0usize;
+            ntrvm(handle, addr, buf.as_mut_ptr().cast(), buf.len(), &mut n) >= 0 && n == buf.len()
+        };
+        let mut params_ptr = [0u8; 8];
+        if !read(
+            (pbi.peb_base as usize + PEB_PROCESS_PARAMETERS_OFFSET) as *const _,
+            &mut params_ptr,
+        ) {
+            return None;
+        }
+        let params = usize::from_le_bytes(params_ptr);
+        if params == 0 {
+            return None;
+        }
+        let mut us_bytes = [0u8; 16];
+        if !read(
+            (params + PARAMS_CURRENT_DIRECTORY_OFFSET) as *const _,
+            &mut us_bytes,
+        ) {
+            return None;
+        }
+        let length = u16::from_le_bytes(us_bytes[0..2].try_into().ok()?) as usize;
+        let buffer = usize::from_le_bytes(us_bytes[8..16].try_into().ok()?);
+        if length == 0 || buffer == 0 || length > 4096 {
+            return None;
+        }
+        let mut wide = vec![0u16; length / 2];
+        let byte_len = wide.len() * 2;
+        let mut n = 0usize;
+        if ntrvm(
+            handle,
+            buffer as *const _,
+            wide.as_mut_ptr().cast(),
+            byte_len,
+            &mut n,
+        ) < 0
+            || n < 2
+        {
+            return None;
+        }
+        let used = (n / 2).min(wide.len());
+        let s = String::from_utf16_lossy(&wide[..used]).trim_end_matches('\0').trim().to_string();
+        if s.is_empty() {
+            None
+        } else {
+            Some(s)
+        }
     }
 }
 

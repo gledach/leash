@@ -245,6 +245,9 @@ pub struct ProcessEntry {
     pub exe: Option<String>,
     pub command_line: Option<String>,
     pub create_time: Option<i64>,
+    /// Process working directory, when it could be read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
 }
 
 impl ProcessEntry {

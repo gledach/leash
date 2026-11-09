@@ -25,6 +25,8 @@ pub struct ProcView {
     pub exe: Option<String>,
     pub command_line: Option<String>,
     pub window_title: Option<String>,
+    pub cwd: Option<String>,
+    pub create_time: Option<i64>,
 }
 
 impl ProcView {
@@ -43,6 +45,8 @@ impl ProcView {
             exe,
             command_line: command_line.map(|s| s.to_string()),
             window_title: window_title.map(|s| s.to_string()),
+            cwd: None,
+            create_time: None,
         }
     }
 }
@@ -709,6 +713,8 @@ pub fn views_from_entries(entries: &[leash_snapshot::ProcessEntry]) -> Vec<ProcV
             exe: p.exe.clone(),
             command_line: p.command_line.clone(),
             window_title: None,
+            cwd: p.cwd.clone(),
+            create_time: p.create_time,
         })
         .collect()
 }
@@ -765,6 +771,8 @@ mod tests {
                 exe: Some(r"C:\Users\a\AppData\Local\Programs\Microsoft VS Code\Code.exe".into()),
                 command_line: Some(r#""C:\Users\a\AppData\Local\Programs\Microsoft VS Code\Code.exe""#.into()),
                 window_title: Some("leash - Visual Studio Code".into()),
+                cwd: None,
+                create_time: None,
             },
             ProcView {
                 pid: 201,
@@ -773,6 +781,8 @@ mod tests {
                 exe: Some(r"C:\Users\a\AppData\Local\Programs\Microsoft VS Code\Code.exe".into()),
                 command_line: Some(r#""C:\Users\a\AppData\Local\Programs\Microsoft VS Code\Code.exe" --type=renderer"#.into()),
                 window_title: None,
+                cwd: None,
+                create_time: None,
             },
             ProcView::fixture(
                 210,
@@ -791,6 +801,8 @@ mod tests {
                         .into(),
                 ),
                 window_title: None,
+                cwd: None,
+                create_time: None,
             },
             ProcView {
                 pid: 230,
@@ -802,6 +814,8 @@ mod tests {
                         .into(),
                 ),
                 window_title: None,
+                cwd: None,
+                create_time: None,
             },
             // Noise that must not appear as a watch candidate.
             ProcView::fixture(50, Some(1), "chrome.exe", None, Some("Gmail - Google Chrome")),
@@ -817,6 +831,8 @@ mod tests {
             exe: Some(r"C:\Users\a\AppData\Local\Programs\cursor\Cursor.exe".into()),
             command_line: Some(r#"C:\Users\a\AppData\Local\Programs\cursor\Cursor.exe"#.into()),
             window_title: Some("leash - Cursor".into()),
+            cwd: None,
+            create_time: None,
         });
         v.push(ProcView {
             pid: 400,
@@ -828,6 +844,8 @@ mod tests {
                     .into(),
             ),
             window_title: None,
+            cwd: None,
+            create_time: None,
         });
         v.push(ProcView::fixture(
             500,
@@ -846,6 +864,8 @@ mod tests {
                     .into(),
             ),
             window_title: None,
+            cwd: None,
+            create_time: None,
         });
         v.push(ProcView::fixture(
             700,
@@ -861,6 +881,8 @@ mod tests {
             exe: Some(r"C:\Users\a\AppData\Local\Programs\Windsurf\Windsurf.exe".into()),
             command_line: Some(r"C:\Users\a\AppData\Local\Programs\Windsurf\Windsurf.exe".into()),
             window_title: Some("Windsurf".into()),
+            cwd: None,
+            create_time: None,
         });
         v
     }
@@ -884,6 +906,8 @@ mod tests {
             exe: Some(r"C:\Users\a\AppData\Local\Programs\Microsoft VS Code Insiders\Code - Insiders.exe".into()),
             command_line: None,
             window_title: Some("Visual Studio Code - Insiders".into()),
+            cwd: None,
+            create_time: None,
         };
         assert!(matches_query(&p, "vscode").is_some());
         assert!(matches_query(&p, "code - insiders").is_some());
@@ -1029,6 +1053,8 @@ mod tests {
                     .into(),
             ),
             window_title: None,
+            cwd: None,
+            create_time: None,
         };
         assert!(matches_query(&p, "CLAUDE").is_some());
     }

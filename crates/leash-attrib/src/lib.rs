@@ -8,6 +8,7 @@ mod join;
 mod logutil;
 mod model;
 mod paths;
+mod picker;
 mod resolve;
 mod service;
 mod tree;
@@ -28,6 +29,7 @@ pub use discover::{
     AppKind, AttachResolution, ProcView, WatchCandidate,
 };
 pub use resolve::{plan_launch, plan_launch_from_env, LaunchKind, LaunchPlan};
+pub use picker::{build_picker, format_ps_rows, PickerModel, PickerRow, WatchSelection};
 
 use leash_snapshot::ProcessEntry;
 
