@@ -7,19 +7,21 @@ use leash_filter::{context_from_env, FilterConfig, FilterContext, FilterEngine};
 use leash_packages::collect_packages;
 use leash_persist::{collect as collect_persist, PersistOptions};
 use leash_snapshot::{
-    default_data_dir, diff_snapshots, render_json, render_markdown, render_text, DiffOptions,
-    FileMode, SessionStore, Snapshot, SnapshotLabel,
+    default_data_dir, diff_snapshots, render_html, render_json, render_markdown, render_summary,
+    render_text, DiffOptions, DiffReport, FileMode, SessionStore, Snapshot, SnapshotLabel,
 };
 use leash_usn::{collect_after, collect_before, ScanOptions};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+
+mod open;
 
 #[derive(Parser, Debug)]
 #[command(
     name = "leash",
     version,
     about = "Watch what an AI coding agent changes on this Windows PC, outside the repo. Read-only: it never deletes, kills, or blocks anything.",
-    after_help = "Typical session:\n  leash start --path .     # in an elevated PowerShell, from the repo\n  # …run the agent…\n  leash stop\n  leash report             # reprint the last report"
+    after_help = "Typical session:\n  leash start --path .     # in an elevated PowerShell, from the repo\n  # …run the agent…\n  leash stop               # short summary + paths; open the HTML with: leash open\n  leash last               # reprint the short summary\n  leash open               # open report.html"
 )]
 struct Cli {
     /// Path of the watched repo (changes inside it are ignored, except .env and similar).
@@ -46,22 +48,50 @@ struct Cli {
 enum Commands {
     /// Take a baseline snapshot and print a session id.
     Start,
-    /// Take the second snapshot and print a filtered report.
+    /// Take the second snapshot and write a report (short summary on the console).
     Stop {
         /// Session id from `leash start` (default: the current session).
         session: Option<String>,
-        /// Print the report as JSON instead of text.
+        /// Print the report as JSON instead of the short summary.
         #[arg(long)]
         json: bool,
+        /// Print the full text report on the console.
+        #[arg(long)]
+        verbose: bool,
+        /// Open the session folder in Explorer.
+        #[arg(long)]
+        open: bool,
         /// Also write a markdown report to this path (a copy is always stored in the session folder).
         #[arg(long)]
         markdown: Option<PathBuf>,
     },
-    /// Re-print the last report (or a named session's report).
+    /// Re-print the last report (short summary by default).
     Report {
         session: Option<String>,
+        /// Print report.json to stdout.
         #[arg(long)]
         json: bool,
+        /// Print the full text report on the console.
+        #[arg(long)]
+        verbose: bool,
+        /// Open the session folder in Explorer.
+        #[arg(long)]
+        open: bool,
+    },
+    /// Print a concise summary of the latest (or named) session.
+    Last { session: Option<String> },
+    /// Open the latest HTML report in the default app.
+    Open {
+        /// Open report.md instead of report.html.
+        #[arg(long, conflicts_with_all = ["json", "folder"])]
+        md: bool,
+        /// Open report.json instead of report.html.
+        #[arg(long, conflicts_with = "folder")]
+        json: bool,
+        /// Open the session folder in Explorer.
+        #[arg(long)]
+        folder: bool,
+        session: Option<String>,
     },
     /// Check privileges, USN availability, and collector health.
     Doctor,
@@ -72,6 +102,10 @@ enum Commands {
         session: Option<String>,
         #[arg(long)]
         json: bool,
+        #[arg(long)]
+        verbose: bool,
+        #[arg(long)]
+        open: bool,
         #[arg(long)]
         markdown: Option<PathBuf>,
     },
@@ -162,6 +196,8 @@ fn run() -> Result<ExitCode> {
         Commands::Stop {
             session,
             json,
+            verbose,
+            open,
             markdown,
         } => {
             let paths = store.open(session.as_deref())?;
@@ -182,17 +218,23 @@ fn run() -> Result<ExitCode> {
             finish_report(
                 &store,
                 &paths,
-                &before,
-                &after,
+                Some((&before, &after)),
                 &engine,
-                json,
-                markdown.as_deref(),
-                exit_on_high,
+                &ReportPrint {
+                    json,
+                    verbose,
+                    open_folder: open,
+                    markdown_copy: markdown,
+                    hint_open: true,
+                    exit_on_high,
+                },
             )
         }
         Commands::Diff {
             session,
             json,
+            verbose,
+            open,
             markdown,
         } => {
             let paths = store.open(session.as_deref())?;
@@ -201,117 +243,154 @@ fn run() -> Result<ExitCode> {
             finish_report(
                 &store,
                 &paths,
-                &before,
-                &after,
+                Some((&before, &after)),
                 &engine,
-                json,
-                markdown.as_deref(),
-                exit_on_high,
+                &ReportPrint {
+                    json,
+                    verbose,
+                    open_folder: open,
+                    markdown_copy: markdown,
+                    hint_open: false,
+                    exit_on_high,
+                },
             )
         }
-        Commands::Report { session, json } => {
+        Commands::Report {
+            session,
+            json,
+            verbose,
+            open,
+        } => {
             let paths = store.open(session.as_deref())?;
-            if json {
-                if paths.report_json().exists() {
-                    let text = std::fs::read_to_string(paths.report_json())?;
-                    println!("{text}");
-                    return Ok(report_exit_from_json(&text, exit_on_high));
-                }
-                let before = store.read_before(&paths)?;
-                let after = store.read_after(&paths)?;
-                return finish_report(
-                    &store,
-                    &paths,
-                    &before,
-                    &after,
-                    &engine,
-                    true,
-                    None,
-                    exit_on_high,
-                );
-            }
-            if paths.report_md().exists() && !json {
-                // Prefer the saved markdown for `report`, but print the text form if we can rebuild.
-                if let (Ok(before), Ok(after)) =
-                    (store.read_before(&paths), store.read_after(&paths))
-                {
-                    return finish_report(
-                        &store,
-                        &paths,
-                        &before,
-                        &after,
-                        &engine,
-                        false,
-                        None,
-                        exit_on_high,
-                    );
-                }
-                let md = store.read_report_md(&paths)?;
-                println!("{md}");
-                return Ok(ExitCode::SUCCESS);
-            }
-            let before = store.read_before(&paths)?;
-            let after = store.read_after(&paths)?;
             finish_report(
                 &store,
                 &paths,
-                &before,
-                &after,
-                &engine,
-                json,
                 None,
-                exit_on_high,
+                &engine,
+                &ReportPrint {
+                    json,
+                    verbose,
+                    open_folder: open,
+                    markdown_copy: None,
+                    hint_open: false,
+                    exit_on_high,
+                },
             )
+        }
+        Commands::Last { session } => {
+            let paths = store.open(session.as_deref())?;
+            finish_report(
+                &store,
+                &paths,
+                None,
+                &engine,
+                &ReportPrint {
+                    json: false,
+                    verbose: false,
+                    open_folder: false,
+                    markdown_copy: None,
+                    hint_open: false,
+                    exit_on_high,
+                },
+            )
+        }
+        Commands::Open {
+            md,
+            json,
+            folder,
+            session,
+        } => {
+            let paths = store.open(session.as_deref())?;
+            let target = if folder {
+                paths.dir.clone()
+            } else if json {
+                paths.report_json()
+            } else if md {
+                paths.report_md()
+            } else {
+                paths.report_html()
+            };
+            open::open_with_default_app(&target)?;
+            println!("opened {}", target.display());
+            Ok(ExitCode::SUCCESS)
         }
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+struct ReportPrint {
+    json: bool,
+    verbose: bool,
+    open_folder: bool,
+    markdown_copy: Option<PathBuf>,
+    hint_open: bool,
+    exit_on_high: bool,
+}
+
 fn finish_report(
     store: &SessionStore,
     paths: &leash_snapshot::SessionPaths,
-    before: &Snapshot,
-    after: &Snapshot,
+    pair: Option<(&Snapshot, &Snapshot)>,
     engine: &FilterEngine,
-    json: bool,
-    markdown_copy: Option<&Path>,
-    exit_on_high: bool,
+    opts: &ReportPrint,
 ) -> Result<ExitCode> {
-    let report = diff_snapshots(before, after, DiffOptions { engine });
+    let report = load_or_build_report(store, paths, pair, engine)?;
     let md = render_markdown(&report);
-    store.write_report(paths, &report, &md)?;
-    if let Some(extra) = markdown_copy {
+    let html = render_html(&report);
+    store.write_report(paths, &report, &md, &html)?;
+    if let Some(extra) = &opts.markdown_copy {
         if let Some(parent) = extra.parent() {
             if !parent.as_os_str().is_empty() {
                 std::fs::create_dir_all(parent)?;
             }
         }
         std::fs::write(extra, &md)?;
-        eprintln!("markdown report: {}", extra.display());
+        eprintln!("markdown copy: {}", extra.display());
     }
-    eprintln!("session report saved under {}", paths.dir.display());
-    if json {
+
+    if opts.json {
         println!("{}", render_json(&report)?);
-    } else {
+    } else if opts.verbose {
         print!("{}", render_text(&report));
+        print_report_paths(paths);
+    } else {
+        print!("{}", render_summary(&report));
+        print_report_paths(paths);
     }
-    if exit_on_high && report.counts.high > 0 {
+    if opts.hint_open && !opts.json {
+        println!("Open it: leash open");
+    }
+    if opts.open_folder {
+        open::open_with_default_app(&paths.dir)?;
+        eprintln!("opened {}", paths.dir.display());
+    }
+    if opts.exit_on_high && report.counts.high > 0 {
         Ok(ExitCode::from(1))
     } else {
         Ok(ExitCode::SUCCESS)
     }
 }
 
-fn report_exit_from_json(text: &str, exit_on_high: bool) -> ExitCode {
-    if !exit_on_high {
-        return ExitCode::SUCCESS;
+fn print_report_paths(paths: &leash_snapshot::SessionPaths) {
+    println!("report.html  {}", paths.report_html().display());
+    println!("report.json  {}", paths.report_json().display());
+    println!("report.md    {}", paths.report_md().display());
+}
+
+fn load_or_build_report(
+    store: &SessionStore,
+    paths: &leash_snapshot::SessionPaths,
+    pair: Option<(&Snapshot, &Snapshot)>,
+    engine: &FilterEngine,
+) -> Result<DiffReport> {
+    if let Some((before, after)) = pair {
+        return Ok(diff_snapshots(before, after, DiffOptions { engine }));
     }
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(text) {
-        if v["counts"]["high"].as_u64().unwrap_or(0) > 0 {
-            return ExitCode::from(1);
-        }
+    if paths.report_json().exists() {
+        return Ok(store.read_report(paths)?);
     }
-    ExitCode::SUCCESS
+    let before = store.read_before(paths)?;
+    let after = store.read_after(paths)?;
+    Ok(diff_snapshots(&before, &after, DiffOptions { engine }))
 }
 
 fn take_snapshot(

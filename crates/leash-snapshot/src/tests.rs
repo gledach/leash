@@ -1,6 +1,7 @@
 use crate::diff::{diff_snapshots, DiffOptions};
+use crate::html::{escape_html, render_html, verdict_line};
 use crate::model::*;
-use crate::report::{render_markdown, render_text};
+use crate::report::{render_markdown, render_summary, render_text};
 use crate::SNAPSHOT_VERSION;
 use leash_filter::{context_from_env, ChangeKind, FilterEngine, Severity};
 use std::collections::BTreeMap;
@@ -460,4 +461,229 @@ fn rename_detail_shows_old_and_new() {
     });
     let r = report(&before, &after);
     assert!(r.findings.iter().any(|f| f.detail.contains('→')));
+}
+
+#[test]
+fn summary_lists_counts_and_at_most_three_high_findings() {
+    let before = base_snap(SnapshotLabel::Before);
+    let mut after = base_snap(SnapshotLabel::After);
+    after.file_events = vec![
+        file_event(r"C:\Users\Alek\Desktop\a.txt", ChangeKind::Delete),
+        file_event(r"C:\Users\Alek\Desktop\b.txt", ChangeKind::Create),
+        file_event(r"C:\Users\Alek\Desktop\c.txt", ChangeKind::Create),
+        file_event(r"C:\Users\Alek\Desktop\d.txt", ChangeKind::Create),
+        file_event(
+            r"C:\Users\Alek\AppData\Local\Temp\noise.tmp",
+            ChangeKind::Create,
+        ),
+    ];
+    after.env_user.insert("FOO".into(), "bar".into());
+    let r = report(&before, &after);
+    assert!(
+        r.counts.high >= 4,
+        "expected at least 4 high file findings: {:?}",
+        r.findings
+    );
+    assert!(r.counts.medium >= 1);
+    let summary = render_summary(&r);
+    assert!(
+        summary.starts_with("leash session s1: "),
+        "summary should start with a single counts line, got: {summary}"
+    );
+    assert!(summary.contains(&format!(
+        "{} high, {} medium, {} info",
+        r.counts.high, r.counts.medium, r.counts.info
+    )));
+    let high_lines: Vec<_> = summary
+        .lines()
+        .filter(|l| l.starts_with("  [") && !l.contains("more High"))
+        .collect();
+    assert_eq!(
+        high_lines.len(),
+        3,
+        "should show top 3 high only: {summary}"
+    );
+    assert!(
+        summary.contains("more High findings"),
+        "should mention the remainder: {summary}"
+    );
+    assert!(
+        !summary.contains("HIGH\n"),
+        "must not dump the full text report"
+    );
+    assert!(
+        !summary.contains("why:"),
+        "must not include reasons in the concise summary"
+    );
+    assert!(summary.contains("a.txt") || summary.contains("b.txt") || summary.contains("c.txt"));
+}
+
+#[test]
+fn summary_without_high_findings_is_just_the_counts_line() {
+    let mut before = base_snap(SnapshotLabel::Before);
+    before.env_user.insert("X".into(), "1".into());
+    let mut after = base_snap(SnapshotLabel::After);
+    after.env_user.insert("X".into(), "2".into());
+    let r = report(&before, &after);
+    assert_eq!(r.counts.high, 0);
+    assert!(r.counts.medium >= 1);
+    let summary = render_summary(&r);
+    let lines: Vec<_> = summary.lines().filter(|l| !l.is_empty()).collect();
+    assert_eq!(
+        lines.len(),
+        1,
+        "expected only the counts line, got: {summary}"
+    );
+    assert!(lines[0].contains("0 high"));
+    assert!(lines[0].contains("medium"));
+}
+
+pub(crate) fn sample_visual_report() -> DiffReport {
+    let before = base_snap(SnapshotLabel::Before);
+    let mut after = base_snap(SnapshotLabel::After);
+    after.taken_at = "2026-11-09T19:12:00+01:00".into();
+    after.file_mode = FileMode::Usn;
+    after.elevated = true;
+    after
+        .warnings
+        .push("USN journal on D: was not readable: the volume is not NTFS.".into());
+    after.file_events = vec![
+        file_event(r"C:\Users\Alek\Desktop\notes.txt", ChangeKind::Delete),
+        file_event(r"C:\Users\Alek\Desktop\todo.txt", ChangeKind::Create),
+        file_event(
+            r"C:\Users\Alek\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\hook.lnk",
+            ChangeKind::Create,
+        ),
+        file_event(r"C:\Users\Alek\src\other\.env", ChangeKind::DataOverwrite),
+        FileEvent {
+            volume: Some("C:".into()),
+            path: Some(r"C:\Users\Alek\Desktop\renamed.txt".into()),
+            name: "renamed.txt".into(),
+            old_path: Some(r"C:\Users\Alek\Desktop\old.txt".into()),
+            kind: ChangeKind::Rename,
+            reasons_raw: 0,
+            usn: None,
+            file_id: None,
+            is_dir: false,
+            timestamp: None,
+        },
+    ];
+    after.run_keys.push(RunKeyEntry {
+        hive: "HKCU".into(),
+        key: "Run".into(),
+        name: "SuperUpdater".into(),
+        value: r"C:\Users\Alek\updater.exe".into(),
+    });
+    after.scheduled_tasks.push(ScheduledTask {
+        path: r"\Odd\Agent".into(),
+        name: "Agent".into(),
+        enabled: Some(true),
+        command: Some(r"C:\tools\agent.exe".into()),
+        arguments: Some("--quiet".into()),
+        user: Some("Alek".into()),
+    });
+    after.packages.npm.push(Package {
+        name: "left-pad".into(),
+        version: "1.3.0".into(),
+    });
+    after.ports.push(ListeningPort {
+        protocol: "tcp".into(),
+        local_addr: "127.0.0.1".into(),
+        local_port: 8765,
+        pid: 4242,
+        process_name: Some("python.exe".into()),
+        state: Some("LISTEN".into()),
+    });
+    after.processes.push(ProcessEntry {
+        pid: 99,
+        ppid: Some(10),
+        name: "odd.exe".into(),
+        exe: Some(r"C:\Users\Alek\odd.exe".into()),
+        command_line: Some(r"C:\Users\Alek\odd.exe --serve".into()),
+        create_time: Some(200),
+    });
+    after.ssh.authorized_keys = Some(HashedFile {
+        path: r"C:\Users\Alek\.ssh\authorized_keys".into(),
+        exists: true,
+        sha256: Some("bbb".into()),
+        size: Some(12),
+        mtime: Some(2),
+    });
+    let mut before = before;
+    before.taken_at = "2026-11-09T18:00:00+01:00".into();
+    before.ssh.authorized_keys = Some(HashedFile {
+        path: r"C:\Users\Alek\.ssh\authorized_keys".into(),
+        exists: true,
+        sha256: Some("aaa".into()),
+        size: Some(10),
+        mtime: Some(1),
+    });
+    report(&before, &after)
+}
+
+#[test]
+fn html_escapes_untrusted_paths_and_details() {
+    let before = base_snap(SnapshotLabel::Before);
+    let mut after = base_snap(SnapshotLabel::After);
+    after.file_events.push(file_event(
+        r"C:\Users\Alek\Desktop\<script>alert(1)</script>.txt",
+        ChangeKind::Create,
+    ));
+    after
+        .env_user
+        .insert("XSS".into(), r#"<img src=x onerror='alert(2)'>"#.into());
+    let r = report(&before, &after);
+    let html = render_html(&r);
+    assert!(!html.contains("<script>alert(1)</script>"));
+    assert!(!html.contains("onerror='alert(2)'"));
+    assert!(!html.contains("<img src=x"));
+    assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
+    assert!(html.contains("&lt;img src=x"));
+    assert!(html.contains("&#39;") || html.contains("&quot;"));
+    assert_eq!(escape_html("<&>'\""), "&lt;&amp;&gt;&#39;&quot;");
+}
+
+#[test]
+fn html_report_has_header_summary_tree_and_blind_spots() {
+    let r = sample_visual_report();
+    let html = render_html(&r);
+    assert!(html.contains("leash session"));
+    assert!(html.contains("s1"));
+    assert!(verdict_line(&r).contains("need a look") || verdict_line(&r).contains("needs a look"));
+    assert!(html.contains(&escape_html(&verdict_line(&r))));
+    assert!(
+        html.contains("1h 12m"),
+        "duration should be 1h 12m, html: {}",
+        &html[0..800]
+    );
+    assert!(html.contains("elevated"));
+    assert!(html.contains("data-filter-sev=\"high\""));
+    assert!(html.contains("data-filter-cat=\"registry\""));
+    assert!(html.contains("Startup / Run keys"));
+    assert!(html.contains("SuperUpdater"));
+    assert!(html.contains("left-pad"));
+    assert!(html.contains("8765"));
+    assert!(html.contains("odd.exe"));
+    assert!(html.contains("authorized_keys"));
+    assert!(html.contains("class=\"folder\""));
+    assert!(html.contains("created") && html.contains("deleted"));
+    assert!(html.contains("Blind spots"));
+    assert!(html.contains("never deletes"));
+    assert!(
+        !html.contains("http://") && !html.contains("https://"),
+        "must be offline, no CDN"
+    );
+    if let Ok(path) = std::env::var("LEASH_SAMPLE_HTML") {
+        std::fs::write(&path, &html).expect("write sample html");
+        let sum = PathBuf::from(&path).with_extension("summary.txt");
+        let mut text = render_summary(&r);
+        text.push_str(r"report.html  C:\Users\Alek\AppData\Local\leash\sessions\s1\report.html");
+        text.push('\n');
+        text.push_str(r"report.json  C:\Users\Alek\AppData\Local\leash\sessions\s1\report.json");
+        text.push('\n');
+        text.push_str(r"report.md    C:\Users\Alek\AppData\Local\leash\sessions\s1\report.md");
+        text.push('\n');
+        text.push_str("Open it: leash open\n");
+        std::fs::write(sum, text).expect("write sample summary");
+    }
 }

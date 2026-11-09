@@ -375,6 +375,7 @@ dependencies = [
  "leash-snapshot",
  "leash-usn",
  "serde_json",
+ "windows",
 ]
 
 [[package]]

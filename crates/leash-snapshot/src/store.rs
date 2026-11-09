@@ -45,6 +45,9 @@ impl SessionPaths {
     pub fn report_json(&self) -> PathBuf {
         self.dir.join("report.json")
     }
+    pub fn report_html(&self) -> PathBuf {
+        self.dir.join("report.html")
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -152,6 +155,7 @@ impl SessionStore {
         paths: &SessionPaths,
         report: &DiffReport,
         markdown: &str,
+        html: &str,
     ) -> Result<(), SessionError> {
         let json = serde_json::to_string_pretty(report).map_err(|source| SessionError::Json {
             path: paths.report_json(),
@@ -165,7 +169,25 @@ impl SessionStore {
             path: paths.report_md(),
             source,
         })?;
+        fs::write(paths.report_html(), html).map_err(|source| SessionError::Io {
+            path: paths.report_html(),
+            source,
+        })?;
         Ok(())
+    }
+
+    pub fn read_report(&self, paths: &SessionPaths) -> Result<DiffReport, SessionError> {
+        if !paths.report_json().exists() {
+            return Err(SessionError::MissingFile(paths.id.clone(), "report.json"));
+        }
+        let text = fs::read_to_string(paths.report_json()).map_err(|source| SessionError::Io {
+            path: paths.report_json(),
+            source,
+        })?;
+        serde_json::from_str(&text).map_err(|source| SessionError::Json {
+            path: paths.report_json(),
+            source,
+        })
     }
 
     pub fn read_report_md(&self, paths: &SessionPaths) -> Result<String, SessionError> {

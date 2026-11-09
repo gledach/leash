@@ -37,11 +37,23 @@ leash doctor
 leash start --path .
 # …run Cursor / Claude / Codex as you normally would…
 leash stop
-leash report            # reprint
-leash report --json     # machine-readable
+# console: a short summary + paths, not the full report
+leash open              # opens report.html in your browser
+leash last              # reprint the short summary
+leash report --verbose  # full text in the terminal
+leash report --json     # JSON on stdout
 ```
 
-`leash stop` writes `report.md` and `report.json` under `%LOCALAPPDATA%\leash\sessions\<id>\` and prints the text report. It exits with code 1 if there is any high finding (set `exit_on_high = false` in the config to change that).
+`leash stop` writes `report.html`, `report.json`, and `report.md` under `%LOCALAPPDATA%\leash\sessions\<id>\`. The console shows counts, up to three High findings, and those file paths, then a hint: `Open it: leash open`. The HTML report is self-contained (no network, light and dark). It exits with code 1 if there is any high finding (set `exit_on_high = false` in the config to change that).
+
+```powershell
+leash open              # report.html (default)
+leash open --md
+leash open --json
+leash open --folder     # session folder in Explorer
+leash stop --open       # also open the session folder
+leash stop --verbose    # full text report in the terminal
+```
 
 Aliases, if you prefer the names:
 

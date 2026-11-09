@@ -123,6 +123,46 @@ pub fn render_json(report: &DiffReport) -> Result<String, serde_json::Error> {
     serde_json::to_string_pretty(report)
 }
 
+/// Short console summary: counts, then up to three High findings (one line each).
+/// The CLI prints report file paths after this.
+pub fn render_summary(report: &DiffReport) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "leash session {}: {} high, {} medium, {} info ({} file events ignored)\n",
+        report.session_id,
+        report.counts.high,
+        report.counts.medium,
+        report.counts.info,
+        report.ignored.total
+    ));
+    let highs: Vec<&Finding> = filter_sev(report, Severity::High);
+    for f in highs.iter().take(3) {
+        out.push_str(&format!("  {}\n", summary_finding_line(f)));
+    }
+    if highs.len() > 3 {
+        out.push_str(&format!(
+            "  … and {} more High findings in the report\n",
+            highs.len() - 3
+        ));
+    }
+    out
+}
+
+pub fn summary_finding_line(f: &Finding) -> String {
+    let body = if !f.detail.is_empty() {
+        if f.detail.starts_with(&f.title) || f.title.contains(&f.detail) {
+            f.detail.clone()
+        } else {
+            format!("{}  {}", f.title, f.detail)
+        }
+    } else if let Some(path) = &f.path {
+        format!("{}  {}", f.title, path)
+    } else {
+        f.title.clone()
+    };
+    format!("[{}] {}", f.category, body)
+}
+
 fn file_mode_label(report: &DiffReport) -> String {
     match report.file_mode {
         crate::FileMode::Usn => "USN change journal".into(),
