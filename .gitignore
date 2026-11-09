@@ -1,0 +1,10 @@
+/target
+**/*.rs.bk
+.idea/
+.vscode/
+*.pdb
+# local snapshots if someone runs the linux stub in-tree
+.before.json
+.after.json
+/dist
+.cargo/mingw-gcc-compat/*.a

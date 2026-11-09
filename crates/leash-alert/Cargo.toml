@@ -1,0 +1,13 @@
+[package]
+name = "leash-alert"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "v1.5 alert hooks (toasts / ntfy). Stub in v1."
+rust-version.workspace = true
+
+[features]
+default = []
+# Planned: win-toast = ["tauri-winrt-notification"]
+
+[dependencies]

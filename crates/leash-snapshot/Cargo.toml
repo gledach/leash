@@ -1,0 +1,14 @@
+[package]
+name = "leash-snapshot"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Snapshot model, session storage, diff, and report rendering."
+rust-version.workspace = true
+
+[dependencies]
+leash-filter = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }

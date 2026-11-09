@@ -1,0 +1,22 @@
+[package]
+name = "leash-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "leash command-line interface."
+rust-version.workspace = true
+
+[[bin]]
+name = "leash"
+path = "src/main.rs"
+
+[dependencies]
+leash-filter = { workspace = true }
+leash-snapshot = { workspace = true }
+leash-usn = { workspace = true }
+leash-persist = { workspace = true }
+leash-packages = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }

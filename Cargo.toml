@@ -1,0 +1,66 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/leash-filter",
+    "crates/leash-snapshot",
+    "crates/leash-usn",
+    "crates/leash-persist",
+    "crates/leash-packages",
+    "crates/leash-alert",
+    "crates/leash-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Aleksandar Perisic"]
+description = "Read-only before/after snapshots of what changed on a Windows PC outside the repo."
+rust-version = "1.88"
+
+[workspace.dependencies]
+leash-filter = { path = "crates/leash-filter" }
+leash-snapshot = { path = "crates/leash-snapshot" }
+leash-usn = { path = "crates/leash-usn" }
+leash-persist = { path = "crates/leash-persist" }
+leash-packages = { path = "crates/leash-packages" }
+leash-alert = { path = "crates/leash-alert" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+globset = "0.4"
+anyhow = "1"
+thiserror = "2"
+clap = { version = "4", features = ["derive"] }
+sha2 = "0.10"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+quick-xml = "0.37"
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Environment",
+    "Win32_System_IO",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Ioctl",
+    "Win32_System_Memory",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Registry",
+    "Win32_System_Services",
+    "Win32_System_SystemInformation",
+    "Win32_System_TaskScheduler",
+    "Win32_System_Threading",
+    "Win32_System_Variant",
+    "Win32_System_WindowsProgramming",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_Networking_WinSock",
+    "Win32_UI_Shell",
+] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"

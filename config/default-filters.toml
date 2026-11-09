@@ -1,0 +1,138 @@
+# Default ignore / priority rules for leash.
+# Copy to %LOCALAPPDATA%\leash\config.toml and edit; lists below *replace*
+# the defaults for that key when you set them. Use `extra_*` keys to append.
+
+exit_on_high = true
+
+# Glob patterns are matched against a normalized path (lowercase, '/' separators).
+ignore_globs = [
+    "**/node_modules/**",
+    "**/node_modules",
+    "**/.git/**",
+    "**/.git",
+    "**/__pycache__/**",
+    "**/.pytest_cache/**",
+    "**/target/debug/**",
+    "**/target/release/**",
+    "**/target/x86_64-pc-windows-gnu/**",
+    "**/.npm/_cacache/**",
+    "**/npm-cache/**",
+    "**/.cargo/registry/**",
+    "**/.cargo/git/**",
+    "**/pip/cache/**",
+    "**/.cache/**",
+    "**/appdata/local/temp/**",
+    "**/appdata/local/tmp/**",
+    "**/windows/temp/**",
+    "**/windows/prefetch/**",
+    "**/windows/logs/**",
+    "**/windows/softwaredistribution/**",
+    "**/$recycle.bin/**",
+    "**/system volume information/**",
+    "**/appdata/local/microsoft/windows/inetcache/**",
+    "**/appdata/local/microsoft/windows/wer/**",
+    "**/appdata/local/microsoft/windows/explorer/**",
+    "**/appdata/local/microsoft/fontcache/**",
+    "**/appdata/local/pnpm/store/**",
+    "**/appdata/local/nuget/**",
+    "**/appdata/local/pip/cache/**",
+    "**/appdata/local/cargo/registry/**",
+    "**/code cache/**",
+    "**/gpucache/**",
+    "**/shadercache/**",
+    "**/crashdumps/**",
+    "**/crash dumps/**",
+    "**/cache/cache_data/**",
+]
+
+# Case-insensitive path substrings (matched after normalization).
+ignore_substrings = [
+    "/windows/prefetch/",
+    "/windows/logs/",
+    "/windows/temp/",
+    "/windows/servicing/",
+    "/windows/winsxs/",
+    "/appdata/local/temp/",
+    "/appdata/local/tmp/",
+    "/appdata/local/microsoft/windows/inetcache",
+    "/appdata/local/microsoft/windows/webcache",
+    "/appdata/local/microsoft/windows/wer/",
+    "/appdata/local/google/chrome/user data/",
+    "/appdata/local/microsoft/edge/user data/",
+    "/appdata/local/mozilla/firefox/profiles/",
+    "/appdata/roaming/code/cache",
+    "/appdata/roaming/code/cacheddata",
+    "/appdata/roaming/code/cachedextensions",
+    "/appdata/roaming/code/logs",
+    "/appdata/roaming/cursor/cache",
+    "/appdata/roaming/cursor/cacheddata",
+    "/appdata/roaming/cursor/logs",
+    "/appdata/local/npm-cache",
+    "/appdata/local/pnpm/store",
+    "/appdata/local/pip/cache",
+    "/appdata/local/nuget/",
+    "/appdata/local/cargo/registry",
+    "/code cache/",
+    "/gpucache/",
+    "/cacheddata/",
+    "/shadercache/",
+    "/windows/softwaredistribution/",
+]
+
+# Bare file / NTFS metadata names (exact, case-insensitive).
+ignore_names = [
+    "$mft",
+    "$mftmirr",
+    "$logfile",
+    "$volume",
+    "$attrdef",
+    "$bitmap",
+    "$boot",
+    "$badclus",
+    "$secure",
+    "$upcase",
+    "$extend",
+    "$recycle.bin",
+    "pagefile.sys",
+    "hiberfil.sys",
+    "swapfile.sys",
+    "dumpstack.log",
+    "dumpstack.log.tmp",
+]
+
+# High-priority path globs (evaluated after ignore rules).
+high_globs = [
+    "**/.env",
+    "**/.env.*",
+    "**/.envrc",
+    "**/.netrc",
+    "**/.npmrc",
+    "**/.pypirc",
+    "**/*credentials*",
+    "**/*secret*",
+    "**/*.pem",
+    "**/*.pfx",
+    "**/*.p12",
+    "**/id_rsa",
+    "**/id_ed25519",
+    "**/id_ecdsa",
+    "**/id_dsa",
+    "**/.ssh/config",
+    "**/.ssh/authorized_keys",
+    "**/.ssh/authorized_keys2",
+    "**/.gitconfig",
+    "**/.bashrc",
+    "**/.bash_profile",
+    "**/.zshrc",
+    "**/.zprofile",
+    "**/.profile",
+    "**/*.ps1",
+    "**/microsoft.powershell_profile.ps1",
+    "**/profile.ps1",
+]
+
+# Additional ignore / high globs appended on top of the lists above when
+# present in a user config.toml (the default file leaves them empty).
+extra_ignore_globs = []
+extra_ignore_substrings = []
+extra_high_globs = []
