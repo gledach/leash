@@ -95,3 +95,25 @@ pub fn list_processes() -> Vec<ProcessEntry> {
         Vec::new()
     }
 }
+
+pub fn take_process_info_failures() -> Vec<String> {
+    #[cfg(windows)]
+    {
+        win::take_process_info_failures()
+    }
+    #[cfg(not(windows))]
+    {
+        Vec::new()
+    }
+}
+
+pub fn list_window_titles() -> std::collections::HashMap<u32, String> {
+    #[cfg(windows)]
+    {
+        win::list_window_titles()
+    }
+    #[cfg(not(windows))]
+    {
+        std::collections::HashMap::new()
+    }
+}

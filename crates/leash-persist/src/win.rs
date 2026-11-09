@@ -1,14 +1,15 @@
 use crate::{PersistCollection, PersistOptions};
 use leash_snapshot::{ListeningPort, ProcessEntry, RunKeyEntry, ServiceEntry};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::mem;
+use std::sync::Mutex;
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command;
-use windows::core::{HRESULT, PCWSTR, PWSTR};
+use windows::core::{BOOL, HRESULT, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{
-    CloseHandle, ERROR_INSUFFICIENT_BUFFER, ERROR_MORE_DATA, ERROR_NO_MORE_ITEMS, ERROR_SUCCESS,
-    FILETIME, HANDLE, WIN32_ERROR,
+    CloseHandle, GetLastError, ERROR_INSUFFICIENT_BUFFER, ERROR_MORE_DATA, ERROR_NO_MORE_ITEMS,
+    ERROR_SUCCESS, FILETIME, HANDLE, HWND, LPARAM, WIN32_ERROR,
 };
 use windows::Win32::NetworkManagement::IpHelper::{
     GetExtendedTcpTable, GetExtendedUdpTable, TCP_TABLE_OWNER_PID_ALL, UDP_TABLE_OWNER_PID,
@@ -35,9 +36,35 @@ use windows::Win32::System::Threading::{
     PROCESS_NAME_WIN32, PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION,
     PROCESS_VM_READ,
 };
+use windows::Win32::UI::WindowsAndMessaging::{
+    EnumWindows, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible,
+};
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const PROCESS_COMMAND_LINE_INFORMATION: u32 = 60;
+
+static PROCESS_INFO_FAILURES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+pub fn take_process_info_failures() -> Vec<String> {
+    PROCESS_INFO_FAILURES
+        .lock()
+        .map(|mut v| std::mem::take(&mut *v))
+        .unwrap_or_default()
+}
+
+fn clear_process_info_failures() {
+    if let Ok(mut v) = PROCESS_INFO_FAILURES.lock() {
+        v.clear();
+    }
+}
+
+fn note_process_info_failure(msg: String) {
+    if let Ok(mut v) = PROCESS_INFO_FAILURES.lock() {
+        if v.len() < 80 {
+            v.push(msg);
+        }
+    }
+}
 
 pub fn is_elevated() -> bool {
     unsafe {
@@ -632,6 +659,7 @@ fn fill_port_names(ports: &mut [ListeningPort], procs: &[ProcessEntry]) {
 }
 
 pub fn collect_processes() -> anyhow::Result<Vec<ProcessEntry>> {
+    clear_process_info_failures();
     unsafe {
         let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)?;
         let mut entry = PROCESSENTRY32W {
@@ -644,7 +672,7 @@ pub fn collect_processes() -> anyhow::Result<Vec<ProcessEntry>> {
                 let pid = entry.th32ProcessID;
                 let ppid = entry.th32ParentProcessID;
                 let name = utf16_to_string(&entry.szExeFile);
-                let (exe, cmd, created) = process_details(pid);
+                let (exe, cmd, created) = process_details(pid, &name);
                 out.push(ProcessEntry {
                     pid,
                     ppid: Some(ppid),
@@ -663,7 +691,7 @@ pub fn collect_processes() -> anyhow::Result<Vec<ProcessEntry>> {
     }
 }
 
-fn process_details(pid: u32) -> (Option<String>, Option<String>, Option<i64>) {
+fn process_details(pid: u32, name: &str) -> (Option<String>, Option<String>, Option<i64>) {
     if pid == 0 {
         return (None, None, None);
     }
@@ -674,7 +702,16 @@ fn process_details(pid: u32) -> (Option<String>, Option<String>, Option<i64>) {
             Ok(h) => h,
             Err(_) => match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
                 Ok(h) => h,
-                Err(_) => return (None, None, None),
+                Err(_) => {
+                    let err = GetLastError();
+                    if pid > 4 {
+                        note_process_info_failure(format!(
+                            "pid {pid} ({name}): OpenProcess failed (status {}); often access denied unless elevated",
+                            err.0
+                        ));
+                    }
+                    return (None, None, None);
+                }
             },
         };
         let mut buf = [0u16; 1024];
@@ -693,6 +730,11 @@ fn process_details(pid: u32) -> (Option<String>, Option<String>, Option<i64>) {
         };
         let created = process_create_time(handle);
         let cmd = process_command_line(handle);
+        if cmd.is_none() && pid > 4 {
+            note_process_info_failure(format!(
+                "pid {pid} ({name}): command line unavailable (NtQueryInformationProcess); often access denied unless elevated"
+            ));
+        }
         let _ = CloseHandle(handle);
         (exe, cmd, created)
     }
@@ -799,6 +841,46 @@ impl AsRawWide for PWSTR {
 #[allow(dead_code)]
 fn _keep(h: HRESULT) -> HRESULT {
     h
+}
+
+
+pub fn list_window_titles() -> HashMap<u32, String> {
+    let mut map = HashMap::new();
+    unsafe {
+        let _ = EnumWindows(
+            Some(enum_windows_proc),
+            LPARAM(&mut map as *mut HashMap<u32, String> as isize),
+        );
+    }
+    map
+}
+
+unsafe extern "system" fn enum_windows_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    let map = unsafe { &mut *(lparam.0 as *mut HashMap<u32, String>) };
+    if !IsWindowVisible(hwnd).as_bool() {
+        return BOOL(1);
+    }
+    let mut pid = 0u32;
+    unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+    if pid == 0 {
+        return BOOL(1);
+    }
+    let mut buf = [0u16; 512];
+    let n = unsafe { GetWindowTextW(hwnd, &mut buf) };
+    if n <= 0 {
+        return BOOL(1);
+    }
+    let title = utf16_to_string(&buf[..n as usize]);
+    if title.is_empty() {
+        return BOOL(1);
+    }
+    match map.get(&pid) {
+        Some(old) if old.len() >= title.len() => {}
+        _ => {
+            map.insert(pid, title);
+        }
+    }
+    BOOL(1)
 }
 
 pub fn list_processes() -> Vec<leash_snapshot::ProcessEntry> {

@@ -375,10 +375,12 @@ pub fn start_session_watching(
                 let _ = leash_attrib::write_watch(&started.paths.dir, &watch);
             }
             Err(err) => {
-                let mut log = leash_attrib::TraceLog::default();
-                log.status = leash_attrib::AttributionStatus::Failed;
-                log.error = Some(err.to_string());
-                log.target = Some(target.label());
+                let log = leash_attrib::TraceLog {
+                    status: leash_attrib::AttributionStatus::Failed,
+                    error: Some(err.to_string()),
+                    target: Some(target.label()),
+                    ..Default::default()
+                };
                 let _ = leash_attrib::write_trace(&started.paths.dir, &log);
             }
         }
@@ -458,14 +460,16 @@ fn run_command_session_windows(
     match rx.recv_timeout(std::time::Duration::from_secs(12)) {
         Ok(Ok(_)) => {}
         Ok(Err(err)) => {
-            let mut log = leash_attrib::TraceLog::default();
-            log.status = if elevated {
-                leash_attrib::AttributionStatus::Failed
-            } else {
-                leash_attrib::AttributionStatus::Unavailable
+            let log = leash_attrib::TraceLog {
+                status: if elevated {
+                    leash_attrib::AttributionStatus::Failed
+                } else {
+                    leash_attrib::AttributionStatus::Unavailable
+                },
+                error: Some(err.to_string()),
+                target: Some(target.label()),
+                ..Default::default()
             };
-            log.error = Some(err.to_string());
-            log.target = Some(target.label());
             let _ = leash_attrib::write_trace(&started.paths.dir, &log);
         }
         Err(_) => {
@@ -480,26 +484,44 @@ fn run_command_session_windows(
     Ok((paths, report, child_pid))
 }
 
-pub fn resolve_attach_name(name: &str) -> Result<WatchTarget> {
-    let procs = leash_attrib::list_processes();
-    let matches: Vec<&leash_snapshot::ProcessEntry> = procs
-        .iter()
-        .filter(|p| leash_attrib::names_equal(&p.name, name) || p.exe.as_deref().is_some_and(|e| leash_attrib::names_equal(e, name)))
-        .collect();
-    anyhow::ensure!(
-        !matches.is_empty(),
-        "no running process matched `{name}`. Use `leash start --pid <pid>` if you know the pid."
-    );
-    let pids: Vec<u32> = {
-        let mut v: Vec<u32> = matches.iter().map(|p| p.pid).collect();
-        v.sort_unstable();
-        v.dedup();
-        v
-    };
-    Ok(WatchTarget::Names {
-        names: vec![name.to_string()],
-        pids,
+pub struct AttachOutcome {
+    pub target: WatchTarget,
+    pub message: String,
+}
+
+pub fn resolve_attach_name(name: &str) -> Result<AttachOutcome> {
+    let views = leash_attrib::live_views();
+    let res = leash_attrib::resolve_attach(&views, name);
+    if res.roots.is_empty() {
+        anyhow::bail!("{}", res.no_match_message(&views));
+    }
+    let pids: Vec<u32> = res.roots.iter().map(|r| r.pid).collect();
+    Ok(AttachOutcome {
+        target: WatchTarget::Names {
+            names: vec![res.app_id.clone().unwrap_or_else(|| name.to_string())],
+            pids,
+        },
+        message: res.format_summary(&views),
     })
+}
+
+/// Text for `leash ps` / `leash list`.
+pub fn format_process_list() -> String {
+    let views = leash_attrib::live_views();
+    let list = leash_attrib::discover_candidates(&views);
+    if list.is_empty() {
+        return "No known editors or coding agents were visible.
+If you expected one, run `leash ps` from an elevated window (command lines can be hidden otherwise),
+or pass `leash start --pid <pid>`.
+"
+            .into();
+    }
+    let mut s = String::from("leash ps  (known editors and coding agents)
+
+");
+    s.push_str(&leash_attrib::format_ps(&list));
+    s.push('\n');
+    s
 }
 
 pub fn resolve_attach_pid(pid: u32) -> Result<WatchTarget> {

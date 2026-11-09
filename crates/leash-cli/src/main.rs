@@ -8,8 +8,9 @@
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
+use leash_cli::examples;
 use leash_cli::ops::{
-    data_dir_or_default, load_engine, load_or_build_report, load_prefs, mode_label, resolve_attach_name,
+    data_dir_or_default, format_process_list, load_engine, load_or_build_report, load_prefs, mode_label, resolve_attach_name,
     resolve_attach_pid, resolve_repo, run_command_session, session_repo_from_store, start_session,
     start_session_watching, stop_session, take_snapshot,
 };
@@ -25,7 +26,7 @@ use std::process::ExitCode;
     name = "leash",
     version,
     about = "Watch what an AI coding agent changes on this Windows PC, outside the repo. Read-only: it never deletes, kills, or blocks anything.",
-    after_help = "With no arguments, leash opens a window (double-click from Explorer).\nTypical CLI session:\n  leash start --path .     # in an elevated PowerShell, from the repo\n  # …run the agent…\n  leash stop               # short summary + paths; open the HTML with: leash open\n  leash last               # reprint the short summary\n  leash open               # open report.html"
+    after_help = "With no arguments, leash opens a window (double-click from Explorer).\nTypical CLI session:\n  leash start --path .     # in an elevated PowerShell, from the repo\n  # …run the agent…\n  leash stop               # short summary + paths; open the HTML with: leash open\n  leash last               # reprint the short summary\n  leash open               # open report.html\n\nCopy-paste recipes (Claude YOLO, Codex, Gemini, attach to VS Code, …):\n  leash examples\n  https://gledach.de/leash/examples/"
 )]
 struct Cli {
     /// Path of the watched repo (changes inside it are ignored, except .env and similar).
@@ -55,7 +56,8 @@ enum Commands {
         /// Attach to a running process id and attribute changes to its tree (needs admin).
         #[arg(long)]
         pid: Option<u32>,
-        /// Attach to every running process with this image name, e.g. `cursor` (needs admin).
+        /// Attach to a running editor or agent, e.g. `vscode`, `cursor`, `claude` (needs admin).
+        /// Matches image name, window title and command line (so `claude` finds npm's node.exe).
         #[arg(long, conflicts_with = "pid")]
         attach: Option<String>,
     },
@@ -120,6 +122,11 @@ enum Commands {
     Doctor,
     /// Write a named snapshot (`before` or `after`) without printing a report.
     Snap { which: SnapWhich },
+    /// List known editors and coding agents: pid, name, why it matched, parent.
+    #[command(visible_alias = "list")]
+    Ps,
+    /// Copy-paste recipes for leash run, attach, and open.
+    Examples,
     /// Compare the last before/after snapshots (same as `stop` without taking a new snapshot).
     Diff {
         session: Option<String>,
@@ -207,8 +214,9 @@ fn run_cli() -> Result<ExitCode> {
                 let target = resolve_attach_pid(*pid)?;
                 start_session_watching(&store, &repo, &data_dir, target)?
             } else if let Some(name) = attach {
-                let target = resolve_attach_name(name)?;
-                start_session_watching(&store, &repo, &data_dir, target)?
+                let outcome = resolve_attach_name(name)?;
+                println!("{}", outcome.message);
+                start_session_watching(&store, &repo, &data_dir, outcome.target)?
             } else {
                 start_session(&store, &repo, &data_dir)?
             };
@@ -429,6 +437,14 @@ fn run_cli() -> Result<ExitCode> {
             };
             open::open_with_default_app(&target)?;
             println!("opened {}", target.display());
+            Ok(ExitCode::SUCCESS)
+        }
+        Commands::Ps => {
+            print!("{}", format_process_list());
+            Ok(ExitCode::SUCCESS)
+        }
+        Commands::Examples => {
+            print!("{}", examples::render_cli());
             Ok(ExitCode::SUCCESS)
         }
     }

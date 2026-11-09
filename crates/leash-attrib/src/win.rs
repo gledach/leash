@@ -392,9 +392,34 @@ fn seed_tree(tree: &mut ProcessTree, target: &WatchTarget, at: InstantMs) {
             tree.add_root(rec);
             tree.ingest_snapshot(&snapshot, at);
         }
-        WatchTarget::Names { names, .. } => {
-            for name in names {
-                tree.add_roots_named(name, &snapshot, at);
+        WatchTarget::Names { names, pids } => {
+            // Prefer the pids the matcher already resolved (aliases, command
+            // lines, editor roots). add_roots_named only compares image names
+            // and would miss node.exe running claude-code.
+            if pids.is_empty() {
+                for name in names {
+                    tree.add_roots_named(name, &snapshot, at);
+                }
+            } else {
+                for pid in pids {
+                    if let Some(rec) = snapshot.iter().find(|p| p.pid == *pid) {
+                        tree.add_root(rec.clone());
+                    } else {
+                        tree.add_root(ProcessRecord {
+                            pid: *pid,
+                            parent_pid: None,
+                            start_ms: at,
+                            end_ms: None,
+                            image: names
+                                .first()
+                                .cloned()
+                                .unwrap_or_else(|| format!("pid {pid}")),
+                            exe: None,
+                            command_line: None,
+                            in_agent_tree: true,
+                        });
+                    }
+                }
             }
             tree.ingest_snapshot(&snapshot, at);
         }
@@ -604,9 +629,17 @@ pub fn spawn_watcher(exe: &Path, data_dir: &Path, session_id: &str) -> Result<u3
 
 pub fn spawn_command(argv: &[String], cwd: &Path) -> Result<std::process::Child> {
     anyhow::ensure!(!argv.is_empty(), "no command given");
-    let mut cmd = std::process::Command::new(&argv[0]);
-    if argv.len() > 1 {
-        cmd.args(&argv[1..]);
+    let plan = crate::plan_launch_from_env(argv, cwd);
+    if let Some(resolved) = &plan.resolved {
+        log(format!(
+            "spawn {} as {:?} -> {} {:?}",
+            argv[0], plan.kind, plan.program, plan.args
+        ));
+        let _ = resolved;
+    }
+    let mut cmd = std::process::Command::new(&plan.program);
+    if !plan.args.is_empty() {
+        cmd.args(&plan.args);
     }
     cmd.current_dir(cwd)
         .stdin(std::process::Stdio::inherit())

@@ -2,6 +2,8 @@
 
 #![cfg(windows)]
 
+use crate::examples::{self, EXAMPLES_URL};
+use crate::open::open_url;
 use crate::ops::{
     coverage_sentence, is_elevated, load_engine, load_prefs, resolve_attach_pid, start_session,
     start_session_watching, stop_session,
@@ -16,8 +18,9 @@ use chrono::Utc;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable as _, Theme, ThemeMode};
 use gpui_kit::*;
+use leash_attrib::WatchCandidate;
 use leash_snapshot::{
-    aggregate_finding_lines, format_elapsed_since, DiffReport, ProcessEntry, SessionInfo, SessionStatus,
+    aggregate_finding_lines, format_elapsed_since, DiffReport, SessionInfo, SessionStatus,
     SessionStore, UiPrefs, UiTheme, SYSTEM_WIDE_CAVEAT,
 };
 use std::path::PathBuf;
@@ -82,7 +85,7 @@ struct LeashApp {
     elevated: bool,
     start_menu_ok: bool,
     note: Option<String>,
-    candidates: Vec<ProcessEntry>,
+    candidates: Vec<WatchCandidate>,
 }
 
 impl LeashApp {
@@ -357,6 +360,14 @@ impl LeashApp {
         self.save_prefs();
         cx.notify();
     }
+
+    fn open_examples(&mut self, cx: &mut Context<Self>) {
+        match open_url(EXAMPLES_URL) {
+            Ok(()) => self.note = Some(format!("Opened {EXAMPLES_URL}")),
+            Err(err) => self.note = Some(err.to_string()),
+        }
+        cx.notify();
+    }
 }
 
 impl Render for LeashApp {
@@ -408,14 +419,24 @@ impl LeashApp {
                     ),
             )
             .child(
-                Button::new("theme")
-                    .ghost()
-                    .label(if self.prefs.theme == UiTheme::Dark {
-                        "Light"
-                    } else {
-                        "Dark"
-                    })
-                    .on_click(cx.listener(|this, _, _, cx| this.toggle_theme(cx))),
+                h_flex()
+                    .gap_1()
+                    .child(
+                        Button::new("help-examples")
+                            .ghost()
+                            .label("Examples")
+                            .on_click(cx.listener(|this, _, _, cx| this.open_examples(cx))),
+                    )
+                    .child(
+                        Button::new("theme")
+                            .ghost()
+                            .label(if self.prefs.theme == UiTheme::Dark {
+                                "Light"
+                            } else {
+                                "Dark"
+                            })
+                            .on_click(cx.listener(|this, _, _, cx| this.toggle_theme(cx))),
+                    ),
             )
     }
 
@@ -478,9 +499,22 @@ impl LeashApp {
         }
         self.save_prefs();
         self.phase = Phase::Starting;
-        self.note = Some("Taking the before snapshot and starting attribution…".into());
+        let watched = self
+            .candidates
+            .iter()
+            .find(|c| c.pid == pid)
+            .map(|c| {
+                if c.kind == leash_attrib::AppKind::Editor {
+                    format!("{} ({}, pid {}) and its descendants", c.name, c.app_id, c.pid)
+                } else {
+                    format!("{} ({}, pid {})", c.name, c.app_id, c.pid)
+                }
+            })
+            .unwrap_or_else(|| format!("pid {pid}"));
+        self.note = Some(format!("Taking the before snapshot and starting attribution for {watched}…"));
         let repo = self.repo.clone();
         let data_dir = self.data_dir.clone();
+        let watched_for_note = watched.clone();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
@@ -494,7 +528,7 @@ impl LeashApp {
                 match result {
                     Ok(started) => {
                         this.note = if started.snap.elevated {
-                            Some("Watching that process tree until you press Stop.".into())
+                            Some(format!("Watching {watched_for_note} until you press Stop."))
                         } else {
                             Some("Attribution is off because this window is not running as administrator. The report will be system-wide.".into())
                         };
@@ -520,9 +554,10 @@ impl LeashApp {
             .candidates
             .iter()
             .filter(|p| p.pid > 4)
-            .take(8)
-            .map(|p| (p.pid, format!("{}  ({})", p.name, p.pid)))
+            .take(16)
+            .map(|p| (p.pid, p.list_label()))
             .collect();
+        let featured = examples::featured(3);
         v_flex()
             .w_full()
             .gap_1()
@@ -565,6 +600,23 @@ impl LeashApp {
                             .on_click(cx.listener(move |this, _, _, cx| this.start_watch(pid, cx)))
                     })),
             )
+            .child(
+                div()
+                    .text_size(px(11.))
+                    .text_color(theme.muted_foreground)
+                    .child(if self.candidates.is_empty() {
+                        "No known editors or agents visible. Use Refresh, or leash ps in PowerShell. Agents in a terminal are listed under their editor.".to_string()
+                    } else {
+                        "Editors include their terminals and agents. An agent row watches only that subtree.".to_string()
+                    }),
+            )
+            .children(featured.into_iter().map(|r| {
+                div()
+                    .text_size(px(11.))
+                    .font_family("Consolas")
+                    .text_color(theme.muted_foreground)
+                    .child(format!("{}  —  {}", r.code, r.title))
+            }))
     }
 
     fn action_row(&self, cx: &mut Context<Self>, _theme: &Theme) -> impl IntoElement {

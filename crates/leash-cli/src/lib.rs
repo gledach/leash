@@ -2,6 +2,7 @@
 
 pub mod app_mode;
 pub mod crash;
+pub mod examples;
 pub mod debug_log;
 pub mod open;
 pub mod ops;

@@ -114,6 +114,26 @@ leash diff --markdown .\leash-report.md
 You can start a session in the window and stop it from the CLI, or the other
 way around. They read and write the same sessions.
 
+
+## Examples
+
+Copy-paste recipes, including Claude in YOLO mode, Codex, Gemini, Aider, and
+attaching to Cursor or VS Code, live at <https://gledach.de/leash/examples/>
+and in `leash examples` (elevated PowerShell for attribution):
+
+```powershell
+leash run --path . -- claude
+leash run --path . -- claude --dangerously-skip-permissions
+leash start --path . --attach vscode
+leash start --path . --attach cursor
+```
+
+`leash ps` lists the editors and agents leash can see (image name, window
+title and command line), so you can tell whether VS Code or a `node.exe`
+Claude shim was detected. Agent flags change; if one errors, check that
+CLI's own `--help`. The Examples page notes which flags were current in
+November 2026.
+
 ## What it looks at
 
 - File changes on NTFS/ReFS volumes, via the USN change journal when you run it

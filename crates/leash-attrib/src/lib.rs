@@ -3,10 +3,12 @@
 //! The tree, path matching and join logic are platform-independent and are
 //! covered by unit tests on Linux. The ETW collector is Windows-only.
 
+mod discover;
 mod join;
 mod logutil;
 mod model;
 mod paths;
+mod resolve;
 mod service;
 mod tree;
 
@@ -21,6 +23,11 @@ pub use model::*;
 pub use paths::{image_basename, names_equal, normalize_path, normalize_registry, paths_match, registry_match};
 pub use service::{is_kernel_pid, is_service_image};
 pub use tree::{InstantMs, ProcessRecord, ProcessTree};
+pub use discover::{
+    discover_candidates, format_ps, live_views, matches_query, resolve_attach, views_from_entries,
+    AppKind, AttachResolution, ProcView, WatchCandidate,
+};
+pub use resolve::{plan_launch, plan_launch_from_env, LaunchKind, LaunchPlan};
 
 use leash_snapshot::ProcessEntry;
 
@@ -36,25 +43,10 @@ pub fn list_processes() -> Vec<ProcessEntry> {
     }
 }
 
-/// Top-level user processes suitable for a "Watch a running app" list:
-/// skip obvious system images, prefer one row per image name.
-pub fn list_watch_candidates() -> Vec<ProcessEntry> {
-    let mut procs = list_processes();
-    procs.retain(|p| {
-        if p.pid <= 4 {
-            return false;
-        }
-        !is_service_image(&p.name)
-    });
-    procs.sort_by(|a, b| {
-        a.name
-            .to_ascii_lowercase()
-            .cmp(&b.name.to_ascii_lowercase())
-            .then(a.pid.cmp(&b.pid))
-    });
-    let mut seen = std::collections::BTreeSet::new();
-    procs.retain(|p| seen.insert(p.name.to_ascii_lowercase()));
-    procs
+/// Editors and known coding agents, grouped so an agent running inside an
+/// editor terminal is listed under that editor. Used by the window and `leash ps`.
+pub fn list_watch_candidates() -> Vec<WatchCandidate> {
+    discover::discover_candidates(&discover::live_views())
 }
 
 pub fn process_entry_to_record(p: &ProcessEntry) -> ProcessRecord {

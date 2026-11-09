@@ -57,3 +57,46 @@ fn windows_shell_execute(path: &Path) -> Result<()> {
     }
     Ok(())
 }
+
+/// Open a URL in the default browser (ShellExecuteW). Unlike
+/// [`open_with_default_app`], the target does not have to exist on disk.
+pub fn open_url(url: &str) -> Result<()> {
+    if url.is_empty() {
+        bail!("nothing to open: empty URL");
+    }
+    #[cfg(windows)]
+    {
+        windows_shell_execute_url(url)
+    }
+    #[cfg(not(windows))]
+    {
+        bail!("opening URLs is only supported on Windows (ShellExecuteW). URL: {url}")
+    }
+}
+
+#[cfg(windows)]
+fn windows_shell_execute_url(url: &str) -> Result<()> {
+    use windows::core::PCWSTR;
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    let file: Vec<u16> = url.encode_utf16().chain(std::iter::once(0)).collect();
+    let verb: Vec<u16> = "open".encode_utf16().chain(std::iter::once(0)).collect();
+    // SAFETY: `file` and `verb` are null-terminated wide strings that live
+    // for the duration of the call.
+    let rc = unsafe {
+        ShellExecuteW(
+            None,
+            PCWSTR(verb.as_ptr()),
+            PCWSTR(file.as_ptr()),
+            None,
+            None,
+            SW_SHOWNORMAL,
+        )
+    };
+    let code = rc.0 as isize;
+    if code <= 32 {
+        bail!("ShellExecuteW failed to open {url} (status {code})");
+    }
+    Ok(())
+}
