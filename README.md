@@ -1,42 +1,58 @@
 # leash
 
-A small, free, local-first Windows tool for the [gledach.de](https://gledach.de) shelf.
+**See what your AI coding agent changed outside the repo.**
 
-When an AI coding agent (Cursor, Claude Code, Codex, and friends) runs on your PC, it can change more than the repo you opened. leash takes a snapshot of the machine before the session, another one after, and prints a filtered report of what changed *outside* that repo.
+When Cursor, Claude Code, Codex or a similar agent runs on your PC, it can
+change more than the project you opened. leash takes a snapshot of the machine
+before the session, another one after, and shows a filtered report of what
+changed *outside* that repo: files, startup entries, scheduled tasks, services,
+environment variables, global packages, and listening ports.
 
-It is read-only. It never deletes, kills, or blocks anything. It does not open a network connection and does not ask for an account.
+A single Windows exe. No account, no network connection, nothing uploaded.
+It is read-only: it never deletes, kills or blocks anything. Everything it
+observes stays on your machine.
 
-Diagnostic logs are written to `%LOCALAPPDATA%\leash\leash.log` (small, rotated). If the window ever closes unexpectedly, look at `%LOCALAPPDATA%\leash\crash.log`.
+![A leash HTML report, with a High / Medium / Info summary and colour-coded cards for files, startup entries and packages.](docs/report-sample.png)
 
-## What it looks at
+## Get the preview
 
-- File changes on NTFS/ReFS volumes, via the USN change journal when you run it elevated, grouped as create / delete / rename / data overwrite or extend
-- A fallback hash/mtime scan of priority folders if you are not elevated: profile dotfiles, `AppData\Roaming`, Startup, nearby projects
-- Registry `Run` and `RunOnce` (HKCU and HKLM)
-- Scheduled tasks, Windows services, user and system environment variables (PATH is split into entries)
-- Global npm, pnpm, pip, and cargo packages (if those tools are on PATH)
-- Shell profiles, `.gitconfig`, and `~/.ssh` (hashes and file names only — never key material)
-- Listening TCP/UDP ports, with the owning process when it can be seen
-- Processes that appeared during the session and are still running (pid, parent, command line when available)
+Windows 11, unsigned, marked as a pre-release.
 
-The report is ranked **high / medium / info**, each finding with a short reason. Default filters drop the watched repo, `node_modules`, `.git`, `%TEMP%`, browser and editor caches, and Windows prefetch/log noise. `.env` files, Startup folder items, `AppData\Roaming`, and other project roots are kept and ranked high.
+[Download `leash-0.1.0-win64.zip`](https://github.com/gledach/leash/releases/latest)
+from the latest release, unzip it, and double-click `leash.exe`.
 
-Rules live in a small, tested module. Copy `config/default-filters.toml` to `%LOCALAPPDATA%\leash\config.toml` and edit it; `extra_ignore_globs` and `extra_high_globs` append to the defaults.
+Windows SmartScreen will likely warn that the file is unsigned. Choose
+**More info**, then **Run anyway**. A checksum is published next to the zip
+(`SHA256SUMS`). Some antivirus tools may also ask the first time; that is
+expected for an unsigned preview, not a sign that the tool is doing something
+on the network. It is not.
 
-## What it does not see
+## Double-click
 
-Please read [docs/blind-spots.md](docs/blind-spots.md). The short version: repo-internal edits are ignored on purpose, file reads are invisible, v1 cannot name the process that made a change, USN needs Administrator, the journal can wrap, and filters can hide something planted in a cache or `node_modules`.
+The same `leash.exe` is the window and the command line. Opening it with no
+arguments shows a small window:
 
-## Usage (Windows 11)
+1. Pick the project folder the agent will work in.
+2. Press **Start**. A snapshot is written to disk, so you can close the window
+   and still press **Stop** later.
+3. Use the agent as you normally would.
+4. Press **Stop**. The report is written, and **Open report** opens
+   `report.html` in your browser.
 
-The binary is a single `leash.exe`. Double-click it in Explorer (or pin it with **Add to Start menu** in the window). A calm window opens: pick the project folder, press **Start**, use the agent as usual, then press **Stop**. Start writes a snapshot to disk, so you can close the window and still press Stop later. **Open report** opens `report.html` in your browser.
+The window remembers the last folder, lists past sessions, and has an
+**Add to Start menu** button. If you are not administrator, it says so and
+offers **Restart as admin for full coverage**. Without elevation, file coverage
+is a fallback scan of key folders; startup entries, packages and ports still
+appear.
 
-If you are not administrator, the window says so and offers **Restart as admin for full coverage**. Without elevation, file coverage is a fallback scan of key folders; startup entries, packages and ports still appear.
+Diagnostic logs go to `%LOCALAPPDATA%\leash\leash.log` (small, rotated). If the
+window ever closes unexpectedly, look at `%LOCALAPPDATA%\leash\crash.log`.
 
-The same exe is the CLI when you pass any argument (`leash start`, `leash --help`, …). Double-click does not show a console. From PowerShell the CLI still prints to that terminal (it attaches to the parent console, and it leaves pipes alone so `leash report --json > file` works).
+## Commands
 
-For a full file diff, start an **elevated** window (Restart as admin) or PowerShell (right-click → Run as administrator):
-
+From PowerShell, pass any argument and the same exe is a CLI. For a full file
+diff, use an elevated window, or start PowerShell with right-click → Run as
+administrator:
 
 ```powershell
 cd C:\path\to\your\repo
@@ -44,14 +60,14 @@ leash doctor
 leash start --path .
 # …run Cursor / Claude / Codex as you normally would…
 leash stop
-# console: a short summary + paths, not the full report
-leash open              # opens report.html in your browser
+leash open              # report.html in your browser
 leash last              # reprint the short summary
-leash report --verbose  # full text in the terminal
-leash report --json     # JSON on stdout
 ```
 
-`leash stop` writes `report.html`, `report.json`, and `report.md` under `%LOCALAPPDATA%\leash\sessions\<id>\`. The console shows counts, up to three High findings, and those file paths, then a hint: `Open it: leash open`. The HTML report is self-contained (no network, light and dark). It exits with code 1 if there is any high finding (set `exit_on_high = false` in the config to change that).
+`leash stop` writes `report.html`, `report.json` and `report.md` under
+`%LOCALAPPDATA%\leash\sessions\<id>\`. The console shows counts, up to three
+High findings, and those file paths. It exits with code 1 if there is any high
+finding (set `exit_on_high = false` in the config to change that).
 
 ```powershell
 leash open              # report.html (default)
@@ -60,6 +76,8 @@ leash open --json
 leash open --folder     # session folder in Explorer
 leash stop --open       # also open the session folder
 leash stop --verbose    # full text report in the terminal
+leash report --json     # JSON on stdout
+leash report --verbose
 ```
 
 Aliases, if you prefer the names:
@@ -72,13 +90,75 @@ leash diff --json
 leash diff --markdown .\leash-report.md
 ```
 
-Without Administrator, `start` / `stop` still run. File coverage shrinks to the fallback folder scan, and the report will say so. Persistence collectors (Run keys, tasks, services, env, ports, processes, packages) work unelevated, with the usual access limits.
+You can start a session in the window and stop it from the CLI, or the other
+way around. They read and write the same sessions.
 
-Put `leash.exe` anywhere you like. There is no installer in the portable zip. In the window, **Add to Start menu** creates a normal `.lnk` under your Start menu. An Inno Setup script lives at `installer/leash.iss` for a later Windows build; it is not compiled in this tree.
+## What it looks at
 
-## Build
+- File changes on NTFS/ReFS volumes, via the USN change journal when you run it
+  elevated, grouped as create / delete / rename / data overwrite or extend.
+- A fallback hash/mtime scan of priority folders if you are not elevated:
+  profile dotfiles, `AppData\Roaming`, Startup, nearby projects.
+- Registry `Run` and `RunOnce` (HKCU and HKLM).
+- Scheduled tasks, Windows services, user and system environment variables
+  (PATH is split into entries).
+- Global npm, pnpm, pip and cargo packages, if those tools are on PATH.
+- Shell profiles, `.gitconfig`, and `~/.ssh` (hashes and file names only —
+  never key material).
+- Listening TCP/UDP ports, with the owning process when it can be seen.
+- Processes that appeared during the session and are still running (pid,
+  parent, command line when available).
 
-Developed as a Rust workspace. Unit tests for filters, diffs, reports, and parsers run on Linux. The Windows collectors compile behind `cfg(windows)`.
+The report is ranked **high / medium / info**, each finding with a short reason.
+Default filters drop the watched repo, `node_modules`, `.git`, `%TEMP%`,
+browser and editor caches, Windows prefetch/log noise, and busy editor or
+agent state folders such as `workspaceStorage`. Changes to agent
+configuration still show as High: `settings.json`, `mcp.json`, `CLAUDE.md`,
+Claude hooks, Codex config. A busy ignored folder is summarised as one line,
+like `workspaceStorage: 42 changes`.
+
+Rules live in a small, tested module. Copy `config/default-filters.toml` to
+`%LOCALAPPDATA%\leash\config.toml` and edit it; `extra_ignore_globs` and
+`extra_high_globs` append to the defaults.
+
+The HTML report is self-contained (no network, light and dark).
+
+## What it cannot see
+
+Please read [docs/blind-spots.md](docs/blind-spots.md). The short version:
+
+- Changes inside the watched repo are ignored on purpose, except for a few
+  high-priority names such as `.env`.
+- File reads are invisible. The journal records creates, deletes, renames and
+  writes, not opens.
+- v1 cannot name the process that made a change. That needs ETW, planned for
+  v2. Short-lived helpers may already be gone by `leash stop`.
+- USN journal reads need Administrator. Without it, only the fallback folders
+  are scanned. `leash doctor` explains the current mode.
+- The journal can wrap or be recreated between start and stop; early events
+  can be missing, and leash warns when that happens.
+- Non-NTFS volumes, network shares and WSL files are limited or invisible to
+  the USN path.
+- Registry, task and service coverage is the common persistence set, not a
+  complete catalogue.
+- Global package detection follows PATH. If `npm`, `pnpm`, `pip` or `cargo` is
+  missing or renamed, that list is skipped and noted.
+- Default filters can hide something planted in a cache or `node_modules`.
+- There is no network tracing. A process that only talks to the network,
+  without writing a file or opening a local listen port, is out of scope.
+- leash never deletes, kills or blocks anything. It is not ransomware
+  protection, not a sandbox, and not an EDR.
+
+## Privacy
+
+leash does not open a network connection and does not ask for an account.
+Reports and logs stay under `%LOCALAPPDATA%\leash\`. SSH key files are
+recorded as names and hashes, never as key material.
+
+## Build from source
+
+A Rust workspace. Unit tests for filters, diffs, reports and parsers run on
+Linux. The Windows collectors compile behind `cfg(windows)`.
 
 ```bash
 # on a Linux box, with a MinGW (or llvm-mingw) linker on PATH
@@ -87,17 +167,33 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo build --release --target x86_64-pc-windows-gnu
 ```
 
-The window uses [GPUI Kit](https://gpui-kit.com/) 0.9.1. `vendor/gpui-pre-windows` is a small patch so release builds can cross-compile from Linux without `fxc.exe`; shaders are compiled at first launch with `D3DCompile`.
+The window uses [GPUI Kit](https://gpui-kit.com/) 0.9.1.
+`vendor/gpui-pre-windows` is a small patch so release builds can cross-compile
+from Linux without `fxc.exe`; shaders are compiled at first launch with
+`D3DCompile`. That vendored crate is Apache-2.0, from Zed Industries. See
+[NOTICE](NOTICE) and [vendor/README.md](vendor/README.md).
 
-The release binary lands at `target/x86_64-pc-windows-gnu/release/leash.exe`. Building natively on Windows with the MSVC toolchain (`x86_64-pc-windows-msvc`) is also fine, and is the simpler path on a Windows 11 machine.
+The release binary lands at `target/x86_64-pc-windows-gnu/release/leash.exe`.
+Building natively on Windows with the MSVC toolchain
+(`x86_64-pc-windows-msvc`) is also fine, and is the simpler path on a
+Windows 11 machine.
 
-If you cross-compile from Linux with [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) rather than a GCC-based MinGW, rustc still asks for `-lgcc` / `-lgcc_eh`. Run `scripts/setup-cross.sh` after setting `LLVM_MINGW` to the toolchain prefix; `.cargo/config.toml` already adds that compat library path. A classic `mingw-w64` GCC install does not need the script.
+If you cross-compile from Linux with
+[llvm-mingw](https://github.com/mstorsjo/llvm-mingw) rather than a GCC-based
+MinGW, rustc still asks for `-lgcc` / `-lgcc_eh`. Run `scripts/setup-cross.sh`
+after setting `LLVM_MINGW` to the toolchain prefix; `.cargo/config.toml`
+already adds that compat library path. A classic `mingw-w64` GCC install does
+not need the script.
+
+There is no installer in the portable zip. An Inno Setup script lives at
+`installer/leash.iss` for a later Windows build; it is not compiled in this
+tree.
 
 ## Layout
 
 ```
 crates/
-  leash-cli          command line (start, stop, report, doctor)
+  leash-cli          window and command line (start, stop, report, open, last, doctor)
   leash-snapshot     snapshot model, session store, diff, report
   leash-filter       ignore / priority rules
   leash-usn          USN journal via usn-journal-rs, plus fallback scans
@@ -108,6 +204,14 @@ config/default-filters.toml
 docs/blind-spots.md
 ```
 
-## License
+## Roadmap
 
-MIT. See [LICENSE](LICENSE).
+- **v1.5 live mode.** Tail the USN journal during the session, and toast when
+  lots of files are deleted outside the repo. Optional ntfy or Telegram
+  delivery, still from your machine.
+- **v2.** ETW attribution, so a change can be named as a process, and watching
+  reads as well as writes.
+
+## Licence
+
+MIT. See [LICENSE](LICENSE). Third-party notices are in [NOTICE](NOTICE).

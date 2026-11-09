@@ -1,0 +1,10 @@
+leash is licensed under the MIT License. See LICENSE.
+
+This distribution includes a patched copy of gpui-pre-windows 0.3.12
+(Zed's `gpui_windows` crate, a snapshot of zed@d2a4fb6).
+
+  Copyright 2022 - 2025 Zed Industries, Inc.
+  Licensed under the Apache License, Version 2.0.
+  See vendor/gpui-pre-windows/LICENSE-APACHE.
+
+The patch and the reason it exists are described in vendor/README.md.

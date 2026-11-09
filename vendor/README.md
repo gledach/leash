@@ -2,7 +2,7 @@
 
 ## `gpui-pre-windows` 0.3.12
 
-Patched so folder-guard can be **release** cross-compiled from Linux to
+Patched so leash can be **release** cross-compiled from Linux to
 `x86_64-pc-windows-gnu` without `fxc.exe`.
 
 Upstream `build.rs` only compiles HLSL when the *host* is Windows and the
