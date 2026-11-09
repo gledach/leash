@@ -196,7 +196,7 @@ pub fn new_session_id() -> String {
 mod tests {
     use super::*;
     use crate::model::{
-        DiffReport, IgnoreSummary, Snapshot, SnapshotLabel, SeverityCounts,
+        AttributionSummary, DiffReport, IgnoreSummary, Snapshot, SnapshotLabel, SeverityCounts,
     };
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -261,6 +261,7 @@ mod tests {
                 medium: 1,
                 info: 0,
             },
+            attribution: AttributionSummary::off(),
         };
         store
             .write_report(&older, &report, "# md", "<html></html>")

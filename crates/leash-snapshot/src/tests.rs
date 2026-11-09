@@ -529,13 +529,13 @@ fn summary_without_high_findings_is_just_the_counts_line() {
     assert!(r.counts.medium >= 1);
     let summary = render_summary(&r);
     let lines: Vec<_> = summary.lines().filter(|l| !l.is_empty()).collect();
-    assert_eq!(
-        lines.len(),
-        1,
-        "expected only the counts line, got: {summary}"
+    assert!(
+        lines.len() >= 2,
+        "expected the counts line plus the system-wide caveat, got: {summary}"
     );
     assert!(lines[0].contains("0 high"));
     assert!(lines[0].contains("medium"));
+    assert!(lines[1].contains("all changes on this PC"));
 }
 
 pub(crate) fn sample_visual_report() -> DiffReport {
@@ -669,6 +669,8 @@ fn html_report_has_header_summary_tree_and_blind_spots() {
     assert!(html.contains("created") && html.contains("deleted"));
     assert!(html.contains("Blind spots"));
     assert!(html.contains("never deletes"));
+    assert!(html.contains("Shows all changes on this PC during the session"));
+    assert!(html.contains("class=\"caveat\""));
     assert!(
         !html.contains("http://") && !html.contains("https://"),
         "must be offline, no CDN"

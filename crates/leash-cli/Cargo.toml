@@ -16,6 +16,7 @@ leash-snapshot = { workspace = true }
 leash-usn = { workspace = true }
 leash-persist = { workspace = true }
 leash-packages = { workspace = true }
+leash-attrib = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
 serde_json = { workspace = true }

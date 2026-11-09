@@ -7,6 +7,7 @@ members = [
     "crates/leash-persist",
     "crates/leash-packages",
     "crates/leash-alert",
+    "crates/leash-attrib",
     "crates/leash-cli",
 ]
 
@@ -25,6 +26,7 @@ leash-usn = { path = "crates/leash-usn" }
 leash-persist = { path = "crates/leash-persist" }
 leash-packages = { path = "crates/leash-packages" }
 leash-alert = { path = "crates/leash-alert" }
+leash-attrib = { path = "crates/leash-attrib" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"

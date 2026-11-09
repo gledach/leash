@@ -84,3 +84,14 @@ pub fn doctor_lines() -> Vec<String> {
         vec!["Persistence collectors (registry, services, ports): unavailable on this OS.".into()]
     }
 }
+
+pub fn list_processes() -> Vec<ProcessEntry> {
+    #[cfg(windows)]
+    {
+        win::list_processes()
+    }
+    #[cfg(not(windows))]
+    {
+        Vec::new()
+    }
+}

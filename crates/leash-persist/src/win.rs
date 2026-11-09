@@ -631,7 +631,7 @@ fn fill_port_names(ports: &mut [ListeningPort], procs: &[ProcessEntry]) {
     }
 }
 
-fn collect_processes() -> anyhow::Result<Vec<ProcessEntry>> {
+pub fn collect_processes() -> anyhow::Result<Vec<ProcessEntry>> {
     unsafe {
         let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)?;
         let mut entry = PROCESSENTRY32W {
@@ -799,4 +799,8 @@ impl AsRawWide for PWSTR {
 #[allow(dead_code)]
 fn _keep(h: HRESULT) -> HRESULT {
     h
+}
+
+pub fn list_processes() -> Vec<leash_snapshot::ProcessEntry> {
+    collect_processes().unwrap_or_default()
 }

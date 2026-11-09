@@ -1,6 +1,6 @@
 //! Self-contained HTML report. No external requests, no CDN.
 
-use crate::model::{DiffReport, Finding};
+use crate::model::{AttributionBucket, DiffReport, Finding};
 use leash_filter::Severity;
 use std::collections::BTreeMap;
 
@@ -44,8 +44,14 @@ pub fn render_html(report: &DiffReport) -> String {
     render_header(&mut html, report);
     render_summary_strip(&mut html, report);
     render_chips(&mut html, report);
-    render_file_tree(&mut html, report);
-    render_category_cards(&mut html, report);
+    if report.attribution.status.has_events() {
+        render_bucket(&mut html, report, AttributionBucket::Agent, true);
+        render_bucket(&mut html, report, AttributionBucket::Other, false);
+        render_bucket(&mut html, report, AttributionBucket::Unattributed, true);
+    } else {
+        render_file_tree(&mut html, report, None);
+        render_category_cards(&mut html, report, None);
+    }
     render_footer(&mut html, report);
     html.push_str("</main>\n<script>\n");
     html.push_str(JS);
@@ -100,7 +106,28 @@ fn render_header(html: &mut String, report: &DiffReport) {
         meta_row(html, "Repo", repo);
     }
     meta_row(html, "Files", &file_mode_label(report));
-    html.push_str("</dl>\n</header>\n");
+    if report.attribution.status.has_events() {
+        if let Some(target) = &report.attribution.target {
+            meta_row(html, "Watching", target);
+        }
+        meta_row(
+            html,
+            "Attribution",
+            &format!(
+                "{} by the agent, {} by other apps, {} unattributed",
+                report.attribution.agent, report.attribution.other, report.attribution.unattributed
+            ),
+        );
+    }
+    html.push_str("</dl>\n");
+    let caveat = if report.attribution.caveat.is_empty() {
+        crate::SYSTEM_WIDE_CAVEAT
+    } else {
+        report.attribution.caveat.as_str()
+    };
+    html.push_str("<p class=\"caveat\">");
+    html.push_str(&escape_html(caveat));
+    html.push_str("</p>\n</header>\n");
 }
 
 fn meta_row(html: &mut String, key: &str, value: &str) {
@@ -214,11 +241,12 @@ fn sev_chip(html: &mut String, id: &str, label: &str, n: usize) {
     ));
 }
 
-fn render_file_tree(html: &mut String, report: &DiffReport) {
+fn render_file_tree(html: &mut String, report: &DiffReport, bucket: Option<AttributionBucket>) {
     let files: Vec<&Finding> = report
         .findings
         .iter()
         .filter(|f| f.category == "file")
+        .filter(|f| bucket.is_none_or(|b| f.attribution.bucket == b))
         .collect();
     if files.is_empty() {
         return;
@@ -239,7 +267,7 @@ fn render_file_tree(html: &mut String, report: &DiffReport) {
     html.push_str("</div>\n</section>\n");
 }
 
-fn render_category_cards(html: &mut String, report: &DiffReport) {
+fn render_category_cards(html: &mut String, report: &DiffReport, bucket: Option<AttributionBucket>) {
     for (id, label, keys) in CATEGORIES {
         if *id == "file" {
             continue; // already rendered as a tree
@@ -248,6 +276,7 @@ fn render_category_cards(html: &mut String, report: &DiffReport) {
             .findings
             .iter()
             .filter(|f| keys.iter().any(|k| f.category.eq_ignore_ascii_case(k)))
+            .filter(|f| bucket.is_none_or(|b| f.attribution.bucket == b))
             .collect();
         if items.is_empty() {
             continue;
@@ -279,20 +308,132 @@ fn render_category_cards(html: &mut String, report: &DiffReport) {
                 html.push_str(&escape_html(&f.reason));
                 html.push_str("</p>\n");
             }
+            render_attrib_line(html, f);
             html.push_str("</li>\n");
         }
         html.push_str("</ul>\n</section>\n");
     }
 }
 
+
+
+fn attrib_label(f: &Finding) -> Option<String> {
+    let mut bits: Vec<String> = Vec::new();
+    if let Some(chain) = &f.attribution.process_chain {
+        bits.push(chain.clone());
+    } else if let Some(name) = &f.attribution.process_name {
+        if let Some(pid) = f.attribution.process_pid {
+            bits.push(format!("{name} (pid {pid})"));
+        } else {
+            bits.push(name.clone());
+        }
+    }
+    if let Some(note) = &f.attribution.note {
+        bits.push(note.clone());
+    }
+    if bits.is_empty() {
+        None
+    } else {
+        Some(bits.join(" · "))
+    }
+}
+
+fn render_attrib_line(html: &mut String, f: &Finding) {
+    if f.attribution.bucket == AttributionBucket::None
+        && f.attribution.process_chain.is_none()
+        && f.attribution.note.is_none()
+    {
+        return;
+    }
+    let mut bits: Vec<String> = Vec::new();
+    if let Some(chain) = &f.attribution.process_chain {
+        bits.push(chain.clone());
+    } else if let Some(name) = &f.attribution.process_name {
+        if let Some(pid) = f.attribution.process_pid {
+            bits.push(format!("{name} (pid {pid})"));
+        } else {
+            bits.push(name.clone());
+        }
+    }
+    if let Some(note) = &f.attribution.note {
+        bits.push(note.clone());
+    }
+    if bits.is_empty() {
+        return;
+    }
+    html.push_str("<p class=\"item-proc\">");
+    html.push_str(&escape_html(&bits.join(" · ")));
+    html.push_str("</p>\n");
+}
+
+fn render_bucket(
+    html: &mut String,
+    report: &DiffReport,
+    bucket: AttributionBucket,
+    _open: bool,
+) {
+    let count = report
+        .findings
+        .iter()
+        .filter(|f| f.attribution.bucket == bucket)
+        .count();
+    if count == 0 {
+        return;
+    }
+    let (class, collapsed) = match bucket {
+        AttributionBucket::Other => ("bucket bucket-other", true),
+        AttributionBucket::Unattributed => ("bucket bucket-unknown", false),
+        _ => ("bucket bucket-agent", false),
+    };
+    if collapsed {
+        html.push_str("<details class=\"");
+        html.push_str(class);
+        html.push_str("\">\n<summary><h2>");
+        html.push_str(&escape_html(bucket.heading()));
+        html.push_str(&format!(" <span class=\"muted\">{count}</span></h2></summary>\n"));
+    } else {
+        html.push_str("<section class=\"");
+        html.push_str(class);
+        html.push_str("\">\n<h2>");
+        html.push_str(&escape_html(bucket.heading()));
+        html.push_str(&format!(" <span class=\"muted\">{count}</span></h2>\n"));
+    }
+    let lead = match bucket {
+        AttributionBucket::Agent => "The process that made the change was in the agent's tree.",
+        AttributionBucket::Other => "These changed during the session, but the process was not in the agent's tree.",
+        AttributionBucket::Unattributed => "No ETW event named a process for these, or the work went through a service. That is not a guess that the agent did them.",
+        AttributionBucket::None => "",
+    };
+    if !lead.is_empty() {
+        html.push_str("<p class=\"lead\">");
+        html.push_str(lead);
+        html.push_str("</p>\n");
+    }
+    render_file_tree(html, report, Some(bucket));
+    render_category_cards(html, report, Some(bucket));
+    if collapsed {
+        html.push_str("</details>\n");
+    } else {
+        html.push_str("</section>\n");
+    }
+}
+
+fn attribution_footer_line(report: &DiffReport) -> String {
+    if report.attribution.status.has_events() {
+        "Attribution names a process only when an ETW event joins to the finding. Work done only inside a service is labelled unattributed, not guessed. Short-lived helpers may already be gone at stop.".into()
+    } else {
+        "This preview records every change on the PC during the session, not only the agent's. Other apps running at the same time appear too. Per-process attribution needs an elevated `leash run` (or attach). Short-lived helpers may already be gone at stop.".into()
+    }
+}
+
 fn render_footer(html: &mut String, report: &DiffReport) {
-    let _ = report;
+    let attrib = attribution_footer_line(report);
     html.push_str("<footer class=\"blind\">\n<h2>Blind spots</h2>\n");
     html.push_str("<p>This report is an observation, not a guarantee. leash never deletes, kills, or blocks anything.</p>\n<ul>\n");
     for line in [
         "Changes inside the watched repo are ignored by design, except for a few high-priority names such as .env.",
         "File reads are invisible. The journal records creates, deletes, renames, and writes — not opens.",
-        "v1 cannot name the process that made a change. Short-lived helpers may already be gone at stop.",
+        attrib.as_str(),
         "Without Administrator, file coverage is a fallback scan of priority folders, not the whole disk.",
         "The USN journal can wrap or be recreated; early events may be missing, and the report will warn if so.",
         "Default filters drop node_modules, .git, temp, and caches. Something planted there will not show up.",
@@ -316,6 +457,7 @@ struct FileLeaf {
     badge: &'static str,
     severity: Severity,
     detail: String,
+    proc: Option<String>,
 }
 
 impl DirNode {
@@ -329,6 +471,7 @@ impl DirNode {
                 badge: file_badge(&finding.title),
                 severity: finding.severity,
                 detail: finding.detail.clone(),
+                proc: attrib_label(finding),
             });
             return;
         }
@@ -385,6 +528,11 @@ impl DirNode {
                 if !leaf.detail.is_empty() && leaf.detail != leaf.name {
                     html.push_str(" <span class=\"fdetail\">");
                     html.push_str(&escape_html(&leaf.detail));
+                    html.push_str("</span>");
+                }
+                if let Some(proc) = &leaf.proc {
+                    html.push_str(" <span class=\"item-proc\">");
+                    html.push_str(&escape_html(proc));
                     html.push_str("</span>");
                 }
                 html.push_str("</li>\n");

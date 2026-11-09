@@ -9,8 +9,9 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use leash_cli::ops::{
-    data_dir_or_default, load_engine, load_or_build_report, load_prefs, mode_label, resolve_repo,
-    session_repo_from_store, start_session, stop_session, take_snapshot,
+    data_dir_or_default, load_engine, load_or_build_report, load_prefs, mode_label, resolve_attach_name,
+    resolve_attach_pid, resolve_repo, run_command_session, session_repo_from_store, start_session,
+    start_session_watching, stop_session, take_snapshot,
 };
 use leash_cli::open;
 use leash_snapshot::{
@@ -50,7 +51,26 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// Take a baseline snapshot and print a session id.
-    Start,
+    Start {
+        /// Attach to a running process id and attribute changes to its tree (needs admin).
+        #[arg(long)]
+        pid: Option<u32>,
+        /// Attach to every running process with this image name, e.g. `cursor` (needs admin).
+        #[arg(long, conflicts_with = "pid")]
+        attach: Option<String>,
+    },
+    /// Start a session, run a command as a child, wait for it to exit, then write the report.
+    Run {
+        /// The command and its arguments. Put `--` in front if the command has its own flags.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
+        command: Vec<String>,
+    },
+    /// Internal: hold an ETW session until `leash stop` requests it.
+    #[command(hide = true, name = "__watch")]
+    Watch {
+        #[arg(long)]
+        session: String,
+    },
     /// Take the second snapshot and write a report (short summary on the console).
     Stop {
         /// Session id from `leash start` (default: the current session).
@@ -169,6 +189,8 @@ fn attach_parent_console() {
 fn run_cli() -> Result<ExitCode> {
     let cli = Cli::parse();
     let data_dir = data_dir_or_default(cli.data_dir.as_deref());
+    leash_cli::debug_log::init(&data_dir);
+    leash_attrib::set_logger(|m| leash_cli::debug_log::log(m));
     let store = SessionStore::new(&data_dir);
     let prefs = load_prefs(&data_dir);
     let explicit = cli.path.as_deref().or(cli.repo.as_deref());
@@ -179,9 +201,17 @@ fn run_cli() -> Result<ExitCode> {
             run_doctor(&data_dir, &repo);
             Ok(ExitCode::SUCCESS)
         }
-        Commands::Start => {
+        Commands::Start { pid, attach } => {
             let repo = resolve_repo(explicit, None, prefs.last_repo_path.as_deref())?;
-            let started = start_session(&store, &repo, &data_dir)?;
+            let started = if let Some(pid) = pid {
+                let target = resolve_attach_pid(*pid)?;
+                start_session_watching(&store, &repo, &data_dir, target)?
+            } else if let Some(name) = attach {
+                let target = resolve_attach_name(name)?;
+                start_session_watching(&store, &repo, &data_dir, target)?
+            } else {
+                start_session(&store, &repo, &data_dir)?
+            };
             println!("leash session {}", started.paths.id);
             println!("repo:    {}", repo.display());
             println!(
@@ -189,6 +219,18 @@ fn run_cli() -> Result<ExitCode> {
                 mode_label(started.snap.file_mode, started.snap.elevated)
             );
             println!("saved:   {}", started.paths.before().display());
+            if pid.is_some() || attach.is_some() {
+                if started.snap.elevated {
+                    println!("attrib:  watching the process tree until `leash stop`");
+                } else {
+                    println!();
+                    println!("Attribution is off: this process is not running as administrator.");
+                    println!("The report will show all changes on this PC during the session, not only the agent's.");
+                    println!("Restart in an elevated PowerShell, or use Restart as admin in the window, then start again.");
+                }
+            } else {
+                println!("attrib:  off (system-wide). Use `leash run -- <agent>` or `--pid` / `--attach` for per-process attribution.");
+            }
             if !started.snap.elevated {
                 println!();
                 println!("Note: this process is not elevated. File changes use a fallback scan of priority folders, not the USN journal.");
@@ -200,6 +242,39 @@ fn run_cli() -> Result<ExitCode> {
             println!();
             println!("When the agent is done, run:  leash stop");
             Ok(ExitCode::SUCCESS)
+        }
+        Commands::Run { command } => {
+            let repo = resolve_repo(explicit, None, prefs.last_repo_path.as_deref())?;
+            let (engine, exit_on_high) = load_engine(cli.config.as_deref(), &data_dir, &repo)?;
+            if !leash_cli::ops::is_elevated() {
+                println!("Attribution is off: this process is not running as administrator.");
+                println!("The report will show all changes on this PC during the session, not only the agent's.");
+                println!("Re-run from an elevated PowerShell for per-process attribution.");
+                println!();
+            }
+            println!("leash run: {}", command.join(" "));
+            let (paths, report, pid) =
+                run_command_session(&store, &repo, &data_dir, &engine, command)?;
+            if pid != 0 {
+                eprintln!("command pid {pid} has exited");
+            }
+            print_report(&paths, &report, false, false, false, None, true, exit_on_high)
+        }
+        Commands::Watch { session } => {
+            #[cfg(windows)]
+            {
+                leash_cli::debug_log::init(&data_dir);
+                leash_attrib::set_logger(|m| leash_cli::debug_log::log(m));
+                let paths = store.open(Some(session))?;
+                let elevated = leash_cli::ops::is_elevated();
+                leash_attrib::win::watch_main(&paths.dir, elevated)?;
+                Ok(ExitCode::SUCCESS)
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = session;
+                anyhow::bail!("the attribution watcher is Windows-only");
+            }
         }
         Commands::Snap { which } => {
             let (label, paths) = match which {
@@ -437,5 +512,6 @@ fn run_doctor(data_dir: &std::path::Path, repo: &std::path::Path) {
     println!(
         "leash never deletes, kills, or blocks anything. It does not open a network connection."
     );
-    println!("v1 records what changed, not which process did it.");
+    println!("v0.1 records what changed on this PC during the session, not only the agent's.");
+    println!("Per-process attribution: elevated `leash run -- <agent>`, or `leash start --pid` / `--attach`.");
 }

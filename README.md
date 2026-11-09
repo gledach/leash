@@ -15,8 +15,9 @@ observes stays on your machine.
 **v0.1 records every change on the PC during the session, not only the
 agent's.** Other apps running at the same time — a browser, VS Code, Steam,
 another dev server — appear in the report too. Close other apps and keep
-sessions short if you want a quieter report. Per-process attribution
-(`leash run -- <agent>`) is being built.
+sessions short if you want a quieter report. For per-process attribution,
+run an elevated `leash run -- <agent>`, or `leash start --attach cursor`
+/ `--pid`, then `leash stop`. Without that, the report stays system-wide.
 
 ![A leash HTML report, with a High / Medium / Info summary and colour-coded cards for files, startup entries and packages.](docs/report-sample.png)
 
@@ -46,10 +47,11 @@ arguments shows a small window:
    `report.html` in your browser.
 
 The window remembers the last folder, lists past sessions, and has an
-**Add to Start menu** button. If you are not administrator, it says so and
-offers **Restart as admin for full coverage**. Without elevation, file coverage
-is a fallback scan of key folders; startup entries, packages and ports still
-appear.
+**Add to Start menu** button. You can also pick a running app to watch
+(its process tree, when elevated). If you are not administrator, it says so
+and offers **Restart as admin for full coverage and attribution**. Without
+elevation, file coverage is a fallback scan of key folders; startup entries,
+packages and ports still appear, and the report stays system-wide.
 
 Diagnostic logs go to `%LOCALAPPDATA%\leash\leash.log` (small, rotated). If the
 window ever closes unexpectedly, look at `%LOCALAPPDATA%\leash\crash.log`.
@@ -63,11 +65,24 @@ administrator:
 ```powershell
 cd C:\path\to\your\repo
 leash doctor
+
+# System-wide (v0.1 behaviour): every change on the PC during the session
+# is listed, including other apps running at the same time.
 leash start --path .
 # …run Cursor / Claude / Codex as you normally would…
 leash stop
 leash open              # report.html in your browser
 leash last              # reprint the short summary
+
+# Per-process attribution (elevated PowerShell). leash starts the agent,
+# watches its process tree, and splits the report into "your agent did this",
+# "other apps changed this meanwhile", and "unattributed".
+leash run --path . -- claude
+# or attach to something already running:
+leash start --path . --attach cursor
+leash start --path . --pid 1234
+# …then, when you are done…
+leash stop
 ```
 
 `leash stop` writes `report.html`, `report.json` and `report.md` under
@@ -137,10 +152,12 @@ Please read [docs/blind-spots.md](docs/blind-spots.md). The short version:
   high-priority names such as `.env`.
 - File reads are invisible. The journal records creates, deletes, renames and
   writes, not opens.
-- v0.1 cannot name the process that made a change, so the report is
-  system-wide: anything else running in the same window of time shows up
-  too. Per-process attribution (`leash run -- <agent>`) is being built.
-  Short-lived helpers may already be gone by `leash stop`.
+- Without `leash run` or `--pid` / `--attach`, the report is system-wide:
+  anything else running in the same window of time shows up too.
+  Attribution needs Administrator and ETW; if you are not elevated it
+  stays off and says so. Work done only inside a service (Docker, msiexec,
+  svchost) is labelled unattributed, not guessed. Short-lived helpers may
+  already be gone by `leash stop`.
 - USN journal reads need Administrator. Without it, only the fallback folders
   are scanned. `leash doctor` explains the current mode.
 - The journal can wrap or be recreated between start and stop; early events
@@ -208,6 +225,7 @@ crates/
   leash-persist      registry, tasks, services, env, ports, processes
   leash-packages     global npm / pnpm / pip / cargo
   leash-alert        empty hook for v1.5 toasts
+  leash-attrib       process tree, ETW join, `leash run` / attach
 config/default-filters.toml
 docs/blind-spots.md
 ```
@@ -216,8 +234,9 @@ docs/blind-spots.md
 
 - **Attribution (`leash run`).** Start the agent as a child, or attach to a
   running process, and use ETW to name which process made each change. The
-  report will split into “your agent did this”, “other apps changed this
-  meanwhile”, and “unattributed”. Being built now; v0.1 is still system-wide.
+  report splits into “your agent did this”, “other apps changed this
+  meanwhile”, and “unattributed”. Needs an elevated session; the published
+  v0.1.0 zip is still system-wide only, until a newer build is published.
 - **v1.5 live mode.** Tail the USN journal during the session, and toast when
   lots of files are deleted outside the repo. Optional ntfy or Telegram
   delivery, still from your machine.

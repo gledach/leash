@@ -3,7 +3,8 @@
 #![cfg(windows)]
 
 use crate::ops::{
-    coverage_sentence, is_elevated, load_engine, load_prefs, start_session, stop_session,
+    coverage_sentence, is_elevated, load_engine, load_prefs, resolve_attach_pid, start_session,
+    start_session_watching, stop_session,
 };
 use crate::app_mode::{elevation_user_message, ElevationResult};
 use crate::debug_log;
@@ -16,8 +17,8 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable as _, Theme, ThemeMode};
 use gpui_kit::*;
 use leash_snapshot::{
-    aggregate_finding_lines, format_elapsed_since, DiffReport, SessionInfo, SessionStatus,
-    SessionStore, UiPrefs, UiTheme,
+    aggregate_finding_lines, format_elapsed_since, DiffReport, ProcessEntry, SessionInfo, SessionStatus,
+    SessionStore, UiPrefs, UiTheme, SYSTEM_WIDE_CAVEAT,
 };
 use std::path::PathBuf;
 use std::time::Duration;
@@ -34,7 +35,7 @@ pub fn run() -> anyhow::Result<()> {
     app = app.with_assets(gpui_kit::assets::Assets);
     app.run(move |cx| {
         gpui_kit::init(cx);
-        let bounds = Bounds::centered(None, size(px(760.), px(680.)), cx);
+        let bounds = Bounds::centered(None, size(px(760.), px(820.)), cx);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             titlebar: Some(TitlebarOptions {
@@ -81,6 +82,7 @@ struct LeashApp {
     elevated: bool,
     start_menu_ok: bool,
     note: Option<String>,
+    candidates: Vec<ProcessEntry>,
 }
 
 impl LeashApp {
@@ -107,6 +109,7 @@ impl LeashApp {
                 .map(|p| p.exists())
                 .unwrap_or(false),
             note: None,
+            candidates: leash_attrib::list_watch_candidates(),
         };
         app.reload_from_disk();
         app.tick_elapsed(cx);
@@ -367,6 +370,7 @@ impl Render for LeashApp {
             .gap_4()
             .child(self.header(cx, &theme))
             .child(self.folder_row(cx, &theme))
+            .child(self.watch_row(cx, &theme))
             .child(self.action_row(cx, &theme))
             .child(self.status_block(cx, &theme))
             .child(self.result_block(cx, &theme))
@@ -395,6 +399,12 @@ impl LeashApp {
                             .text_size(px(13.))
                             .text_color(theme.muted_foreground)
                             .child("See what an AI agent changed outside your project. Read-only — nothing is deleted, killed, or blocked."),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .text_color(theme.muted_foreground)
+                            .child(SYSTEM_WIDE_CAVEAT),
                     ),
             )
             .child(
@@ -451,6 +461,112 @@ impl LeashApp {
             )
     }
 
+
+    fn refresh_candidates(&mut self, cx: &mut Context<Self>) {
+        self.candidates = leash_attrib::list_watch_candidates();
+        cx.notify();
+    }
+
+    fn start_watch(&mut self, pid: u32, cx: &mut Context<Self>) {
+        if matches!(self.phase, Phase::Starting | Phase::Running(_) | Phase::Stopping) {
+            return;
+        }
+        if self.repo.as_os_str().is_empty() || !self.repo.exists() {
+            self.note = Some("Choose a project folder first.".into());
+            cx.notify();
+            return;
+        }
+        self.save_prefs();
+        self.phase = Phase::Starting;
+        self.note = Some("Taking the before snapshot and starting attribution…".into());
+        let repo = self.repo.clone();
+        let data_dir = self.data_dir.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let store = SessionStore::new(&data_dir);
+                    let target = resolve_attach_pid(pid)?;
+                    start_session_watching(&store, &repo, &data_dir, target)
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                match result {
+                    Ok(started) => {
+                        this.note = if started.snap.elevated {
+                            Some("Watching that process tree until you press Stop.".into())
+                        } else {
+                            Some("Attribution is off because this window is not running as administrator. The report will be system-wide.".into())
+                        };
+                        let info = this
+                            .store
+                            .running_session()
+                            .unwrap_or_else(|| SessionInfo::from_paths(&started.paths));
+                        this.sessions = this.store.list_sessions();
+                        this.phase = Phase::Running(info);
+                    }
+                    Err(err) => this.phase = Phase::Error(err.to_string()),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn watch_row(&self, cx: &mut Context<Self>, theme: &Theme) -> impl IntoElement {
+        let busy = matches!(self.phase, Phase::Starting | Phase::Running(_) | Phase::Stopping);
+        let shown: Vec<(u32, String)> = self
+            .candidates
+            .iter()
+            .filter(|p| p.pid > 4)
+            .take(8)
+            .map(|p| (p.pid, format!("{}  ({})", p.name, p.pid)))
+            .collect();
+        v_flex()
+            .w_full()
+            .gap_1()
+            .child(
+                h_flex()
+                    .w_full()
+                    .justify_between()
+                    .items_center()
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme.muted_foreground)
+                            .child("WATCH A RUNNING APP  ·  or type  leash run -- <command>  in PowerShell"),
+                    )
+                    .child(
+                        Button::new("refresh-apps")
+                            .ghost()
+                            .label("Refresh")
+                            .disabled(busy)
+                            .on_click(cx.listener(|this, _, _, cx| this.refresh_candidates(cx))),
+                    ),
+            )
+            .child(
+                div()
+                    .text_size(px(12.))
+                    .text_color(theme.muted_foreground)
+                    .child("Attribution needs administrator. Plain Start stays system-wide, as before."),
+            )
+            .child(
+                h_flex()
+                    .w_full()
+                    .gap_1()
+                    .flex_wrap()
+                    .children(shown.into_iter().map(|(pid, label)| {
+                        Button::new(SharedString::from(format!("watch-{pid}")))
+                            .ghost()
+                            .label(label)
+                            .disabled(busy)
+                            .on_click(cx.listener(move |this, _, _, cx| this.start_watch(pid, cx)))
+                    })),
+            )
+    }
+
     fn action_row(&self, cx: &mut Context<Self>, _theme: &Theme) -> impl IntoElement {
         let (label, enabled, is_start) = match &self.phase {
             Phase::Starting => ("Starting…", false, true),
@@ -479,7 +595,7 @@ impl LeashApp {
     fn status_block(&self, cx: &mut Context<Self>, theme: &Theme) -> impl IntoElement {
         let mut lines: Vec<(String, bool)> = Vec::new();
         match &self.phase {
-            Phase::Idle => lines.push(("Ready. Choose a project folder and press Start before you run the agent.".into(), false)),
+            Phase::Idle => lines.push(("Ready. Choose a project folder and press Start before you run the agent, or watch a running app below. Start alone is system-wide.".into(), false)),
             Phase::Starting => lines.push(("Taking the before snapshot. This can take a few seconds.".into(), false)),
             Phase::Stopping => lines.push(("Taking the after snapshot and writing the report.".into(), false)),
             Phase::Running(info) => {
@@ -534,7 +650,7 @@ impl LeashApp {
                     .items_center()
                     .child(
                         Button::new("elevate")
-                            .label("Restart as admin for full coverage")
+                            .label("Restart as admin for full coverage and attribution")
                             .on_click(cx.listener(|this, _, window, cx| this.elevate(cx, window))),
                     )
                     .child(
@@ -542,7 +658,7 @@ impl LeashApp {
                             .flex_1()
                             .text_size(px(12.))
                             .text_color(theme.muted_foreground)
-                            .child("Windows only lets leash read the full disk change log as administrator."),
+                            .child("Administrator is needed for the disk change log and for per-process attribution."),
                     )
             }))
     }
@@ -581,6 +697,16 @@ impl LeashApp {
                     .text_size(px(16.))
                     .font_weight(FontWeight::MEDIUM)
                     .child(counts),
+            )
+            .child(
+                div()
+                    .text_size(px(12.))
+                    .text_color(theme.muted_foreground)
+                    .child(if report.attribution.caveat.is_empty() {
+                        SYSTEM_WIDE_CAVEAT.to_string()
+                    } else {
+                        report.attribution.caveat.clone()
+                    }),
             )
             .children(top.into_iter().map(|line| {
                 div()

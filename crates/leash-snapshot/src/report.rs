@@ -19,6 +19,7 @@ pub fn render_text(report: &DiffReport) -> String {
             "  (not elevated)"
         }
     ));
+    write_attrib_preamble(&mut out, report, false);
     if !report.warnings.is_empty() {
         out.push_str("\nwarnings:\n");
         for w in &report.warnings {
@@ -86,6 +87,7 @@ pub fn render_markdown(report: &DiffReport) -> String {
             " (not elevated)"
         }
     ));
+    write_attrib_preamble(&mut out, report, true);
     out.push_str(&format!(
         "- **counts:** {} high, {} medium, {} info; {} file events ignored\n",
         report.counts.high, report.counts.medium, report.counts.info, report.ignored.total
@@ -135,6 +137,11 @@ pub fn render_summary(report: &DiffReport) -> String {
         report.counts.info,
         report.ignored.total
     ));
+    if !report.attribution.caveat.is_empty() {
+        out.push_str(&format!("{}\n", report.attribution.caveat));
+    } else {
+        out.push_str(&format!("{}\n", crate::SYSTEM_WIDE_CAVEAT));
+    }
     let highs: Vec<&Finding> = filter_sev(report, Severity::High);
     for f in highs.iter().take(3) {
         out.push_str(&format!("  {}\n", summary_finding_line(f)));
@@ -166,7 +173,17 @@ pub fn summary_finding_line(f: &Finding) -> String {
     } else {
         f.title.clone()
     };
-    format!("[{}] {}", f.category, body)
+    let mut line = format!("[{}] {}", f.category, body);
+    if let Some(chain) = &f.attribution.process_chain {
+        line.push_str(&format!("  ({chain})"));
+    } else if let Some(name) = &f.attribution.process_name {
+        line.push_str(&format!("  ({name})"));
+    } else if let Some(note) = &f.attribution.note {
+        if f.attribution.bucket != crate::AttributionBucket::None {
+            line.push_str(&format!("  ({note})"));
+        }
+    }
+    line
 }
 
 /// Top-of-window summary: cluster file findings that share a parent or a
@@ -320,6 +337,32 @@ fn write_md_section(out: &mut String, heading: &str, items: &[&Finding]) {
 }
 
 
+
+fn write_attrib_preamble(out: &mut String, report: &DiffReport, markdown: bool) {
+    let caveat = if report.attribution.caveat.is_empty() {
+        crate::SYSTEM_WIDE_CAVEAT
+    } else {
+        report.attribution.caveat.as_str()
+    };
+    if markdown {
+        out.push_str(&format!("- **attribution:** {caveat}\n"));
+        if report.attribution.status.has_events() {
+            out.push_str(&format!(
+                "- **split:** {} agent, {} other, {} unattributed\n",
+                report.attribution.agent, report.attribution.other, report.attribution.unattributed
+            ));
+        }
+    } else {
+        out.push_str(&format!("note:     {caveat}\n"));
+        if report.attribution.status.has_events() {
+            out.push_str(&format!(
+                "split:    {} by the agent, {} by other apps, {} unattributed\n",
+                report.attribution.agent, report.attribution.other, report.attribution.unattributed
+            ));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -334,6 +377,7 @@ mod tests {
             detail: path.into(),
             reason: "test".into(),
             path: Some(path.into()),
+            attribution: Default::default(),
         }
     }
 

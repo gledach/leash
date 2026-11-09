@@ -1,0 +1,21 @@
+[package]
+name = "leash-attrib"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Process-tree tracking and ETW attribution for leash findings."
+rust-version.workspace = true
+
+[dependencies]
+leash-snapshot = { workspace = true }
+leash-filter = { workspace = true }
+leash-persist = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+ferrisetw = "1.2"
+windows = { workspace = true }

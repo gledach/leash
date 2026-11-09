@@ -87,6 +87,7 @@ pub fn diff_snapshots(before: &Snapshot, after: &Snapshot, opts: DiffOptions<'_>
         findings,
         ignored: ignored.into_summary(),
         counts,
+        attribution: crate::AttributionSummary::off(),
     }
 }
 
@@ -184,6 +185,7 @@ fn file_finding(ev: FileEvent, severity: Severity, reason: String) -> Finding {
         detail,
         reason,
         path: Some(path),
+        attribution: Default::default(),
     }
 }
 
@@ -263,6 +265,7 @@ fn diff_run_keys(before: &Snapshot, after: &Snapshot) -> Vec<Finding> {
                 detail: format!("{} = {}", key.name, key.value),
                 reason: "Run/RunOnce values start a program at logon or at next boot".into(),
                 path: Some(id.clone()),
+                attribution: Default::default(),
             }),
             Some(old) if old.value != key.value => out.push(Finding {
                 category: "registry".into(),
@@ -271,6 +274,7 @@ fn diff_run_keys(before: &Snapshot, after: &Snapshot) -> Vec<Finding> {
                 detail: format!("{}: {} → {}", key.name, old.value, key.value),
                 reason: "Run/RunOnce values start a program at logon or at next boot".into(),
                 path: Some(id.clone()),
+                attribution: Default::default(),
             }),
             _ => {}
         }
@@ -284,6 +288,7 @@ fn diff_run_keys(before: &Snapshot, after: &Snapshot) -> Vec<Finding> {
                 detail: format!("{} = {}", key.name, key.value),
                 reason: "a previously registered startup program disappeared".into(),
                 path: Some(id.clone()),
+                attribution: Default::default(),
             });
         }
     }
@@ -303,6 +308,7 @@ fn diff_tasks(before: &Snapshot, after: &Snapshot) -> Vec<Finding> {
                 detail: format!("{}  {}", id, task.command_line()),
                 reason: "scheduled tasks can run in the background without an open window".into(),
                 path: Some(id.clone()),
+                attribution: Default::default(),
             }),
             Some(old) => {
                 let mut changes = Vec::new();
@@ -327,6 +333,7 @@ fn diff_tasks(before: &Snapshot, after: &Snapshot) -> Vec<Finding> {
                         detail: format!("{}  {}", id, changes.join("; ")),
                         reason: "the task's command, identity, or enabled state changed".into(),
                         path: Some(id.clone()),
+                        attribution: Default::default(),
                     });
                 }
             }
@@ -341,6 +348,7 @@ fn diff_tasks(before: &Snapshot, after: &Snapshot) -> Vec<Finding> {
                 detail: format!("{}  {}", id, task.command_line()),
                 reason: "a previously registered scheduled task disappeared".into(),
                 path: Some(id.clone()),
+                attribution: Default::default(),
             });
         }
     }
@@ -374,6 +382,7 @@ fn diff_services(before: &Snapshot, after: &Snapshot) -> Vec<Finding> {
                 ),
                 reason: "a new service can start automatically and run as a system account".into(),
                 path: Some(svc.name.clone()),
+                attribution: Default::default(),
             }),
             Some(old) => {
                 let mut changes = Vec::new();
@@ -400,6 +409,7 @@ fn diff_services(before: &Snapshot, after: &Snapshot) -> Vec<Finding> {
                         detail: changes.join("; "),
                         reason: "the service binary, start type, or account changed".into(),
                         path: Some(svc.name.clone()),
+                        attribution: Default::default(),
                     });
                 } else if old.state != svc.state {
                     out.push(Finding {
@@ -411,6 +421,7 @@ fn diff_services(before: &Snapshot, after: &Snapshot) -> Vec<Finding> {
                             "running/stopped state only; the service configuration is unchanged"
                                 .into(),
                         path: Some(svc.name.clone()),
+                        attribution: Default::default(),
                     });
                 }
             }
@@ -444,6 +455,7 @@ fn diff_env(
                         reason: "programs in this folder can be resolved first, or shadow others"
                             .into(),
                         path: Some(raw.clone()),
+                        attribution: Default::default(),
                     });
                 }
             }
@@ -456,6 +468,7 @@ fn diff_env(
                         detail: raw.clone(),
                         reason: "a folder disappeared from PATH".into(),
                         path: Some(raw.clone()),
+                        attribution: Default::default(),
                     });
                 }
             }
@@ -469,6 +482,7 @@ fn diff_env(
                 detail: format!("{key}={v}"),
                 reason: "a new persistent environment variable appeared".into(),
                 path: Some(key.clone()),
+                attribution: Default::default(),
             }),
             (Some(old), Some(newv)) if old != newv => out.push(Finding {
                 category: "env".into(),
@@ -477,6 +491,7 @@ fn diff_env(
                 detail: format!("{key}: {old} → {newv}"),
                 reason: "a persistent environment variable changed".into(),
                 path: Some(key.clone()),
+                attribution: Default::default(),
             }),
             (Some(old), None) => out.push(Finding {
                 category: "env".into(),
@@ -485,6 +500,7 @@ fn diff_env(
                 detail: format!("{key}={old}"),
                 reason: "a persistent environment variable disappeared".into(),
                 path: Some(key.clone()),
+                attribution: Default::default(),
             }),
             _ => {}
         }
@@ -516,6 +532,7 @@ fn diff_pkg_list(tool: &str, before: &[Package], after: &[Package]) -> Vec<Findi
                     "a global tool or library was installed on the machine, not just in the repo"
                         .into(),
                 path: Some(pkg.name.clone()),
+                attribution: Default::default(),
             }),
             Some(old) if old.version != pkg.version => out.push(Finding {
                 category: "package".into(),
@@ -524,6 +541,7 @@ fn diff_pkg_list(tool: &str, before: &[Package], after: &[Package]) -> Vec<Findi
                 detail: format!("{} {} → {}", pkg.name, old.version, pkg.version),
                 reason: "a global package version changed".into(),
                 path: Some(pkg.name.clone()),
+                attribution: Default::default(),
             }),
             _ => {}
         }
@@ -537,6 +555,7 @@ fn diff_pkg_list(tool: &str, before: &[Package], after: &[Package]) -> Vec<Findi
                 detail: format!("{}@{}", pkg.name, pkg.version),
                 reason: "a global package disappeared".into(),
                 path: Some(pkg.name.clone()),
+                attribution: Default::default(),
             });
         }
     }
@@ -626,6 +645,7 @@ fn hashed_finding(
         },
         reason: format!("{label} files are a common place for agents to hook a shell or git"),
         path: Some(path.to_string()),
+        attribution: Default::default(),
     }
 }
 
@@ -699,6 +719,7 @@ fn diff_ports(before: &Snapshot, after: &Snapshot) -> Vec<Finding> {
                 ),
                 reason: "a process started accepting connections during the session".into(),
                 path: None,
+                attribution: Default::default(),
             });
         }
     }
@@ -733,6 +754,7 @@ fn diff_processes(before: &Snapshot, after: &Snapshot) -> Vec<Finding> {
                 ),
                 reason: "still running after stop; v1 cannot tell which agent started it".into(),
                 path: proc.exe.clone(),
+                attribution: Default::default(),
             });
         }
     }

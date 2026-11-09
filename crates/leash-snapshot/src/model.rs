@@ -256,6 +256,121 @@ impl ProcessEntry {
     }
 }
 
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttributionBucket {
+    #[default]
+    None,
+    Agent,
+    Other,
+    Unattributed,
+}
+
+impl AttributionBucket {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Agent => "agent",
+            Self::Other => "other",
+            Self::Unattributed => "unattributed",
+        }
+    }
+
+    pub fn heading(self) -> &'static str {
+        match self {
+            Self::None => "Unsorted",
+            Self::Agent => "Your agent did this",
+            Self::Other => "Other apps changed this meanwhile",
+            Self::Unattributed => "Unattributed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttributionStatus {
+    #[default]
+    Off,
+    /// The session ran without Administrator, so ETW was not started.
+    Unavailable,
+    Failed,
+    /// File/registry ETW plus the process tree.
+    Active,
+    /// Process tree only (Toolhelp), no file/registry ETW events.
+    Partial,
+}
+
+impl AttributionStatus {
+    pub fn attempted(self) -> bool {
+        !matches!(self, Self::Off)
+    }
+
+    pub fn has_events(self) -> bool {
+        matches!(self, Self::Active | Self::Partial)
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FindingAttribution {
+    #[serde(default)]
+    pub bucket: AttributionBucket,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_pid: Option<u32>,
+    /// e.g. `node.exe ← claude.exe`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_chain: Option<String>,
+    /// e.g. `possibly via a service`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttributionSummary {
+    #[serde(default)]
+    pub status: AttributionStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    #[serde(default)]
+    pub agent: usize,
+    #[serde(default)]
+    pub other: usize,
+    #[serde(default)]
+    pub unattributed: usize,
+    /// One-line explanation shown in the report header and the window.
+    #[serde(default)]
+    pub caveat: String,
+}
+
+impl AttributionSummary {
+    pub fn off() -> Self {
+        Self {
+            status: AttributionStatus::Off,
+            caveat: SYSTEM_WIDE_CAVEAT.to_string(),
+            ..Self::default()
+        }
+    }
+
+    pub fn recount(&mut self, findings: &[Finding]) {
+        self.agent = 0;
+        self.other = 0;
+        self.unattributed = 0;
+        for f in findings {
+            match f.attribution.bucket {
+                AttributionBucket::Agent => self.agent += 1,
+                AttributionBucket::Other => self.other += 1,
+                AttributionBucket::Unattributed => self.unattributed += 1,
+                AttributionBucket::None => {}
+            }
+        }
+    }
+}
+
+pub const SYSTEM_WIDE_CAVEAT: &str =
+    "Shows all changes on this PC during the session, not only your agent's.";
+
 /// A single reported finding after filtering.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Finding {
@@ -265,6 +380,8 @@ pub struct Finding {
     pub detail: String,
     pub reason: String,
     pub path: Option<String>,
+    #[serde(default)]
+    pub attribution: FindingAttribution,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -279,6 +396,8 @@ pub struct DiffReport {
     pub findings: Vec<Finding>,
     pub ignored: IgnoreSummary,
     pub counts: SeverityCounts,
+    #[serde(default)]
+    pub attribution: AttributionSummary,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]

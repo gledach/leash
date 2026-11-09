@@ -4,7 +4,8 @@ use anyhow::{Context, Result};
 use leash_filter::{context_from_env, FilterConfig, FilterContext, FilterEngine};
 use leash_packages::collect_packages;
 use leash_persist::{collect as collect_persist, PersistOptions};
-use leash_snapshot::{
+use leash_attrib::{self, WatchFile, WatchTarget};
+use leash_snapshot::{AttributionSummary, 
     default_data_dir, diff_snapshots, new_session_id, now_local_rfc3339, render_html,
     render_markdown, resolve_repo_path, DiffOptions, DiffReport, FileMode, SessionPaths,
     SessionStore, Snapshot, SnapshotLabel, UiPrefs,
@@ -37,6 +38,7 @@ pub fn stop_session(
     engine: &FilterEngine,
 ) -> Result<(SessionPaths, DiffReport)> {
     let paths = store.open(session)?;
+    stop_watchers(&paths);
     let before = store.read_before(&paths).with_context(|| {
         format!(
             "session {} has no before snapshot; run Start first",
@@ -62,7 +64,8 @@ pub fn write_diff(
     after: &Snapshot,
     engine: &FilterEngine,
 ) -> Result<DiffReport> {
-    let report = diff_snapshots(before, after, DiffOptions { engine });
+    let mut report = diff_snapshots(before, after, DiffOptions { engine });
+    apply_saved_attribution(paths, &mut report);
     let md = render_markdown(&report);
     let html = render_html(&report);
     store.write_report(paths, &report, &md, &html)?;
@@ -327,4 +330,189 @@ pub fn coverage_sentence(elevated: bool, file_mode: Option<FileMode>) -> String 
     } else {
         "Not administrator: leash can still see startup entries, packages and ports, but file coverage is a fallback scan of key folders, not the full disk change log.".into()
     }
+}
+
+
+pub fn apply_saved_attribution(paths: &SessionPaths, report: &mut DiffReport) {
+    match leash_attrib::read_trace(&paths.dir) {
+        Ok(Some(log)) => leash_attrib::apply_attribution(report, &log),
+        _ => {
+            if report.attribution.caveat.is_empty() {
+                report.attribution = AttributionSummary::off();
+            }
+        }
+    }
+}
+
+/// Attach to a running process (or image name) and start a background ETW watcher.
+pub fn start_session_watching(
+    store: &SessionStore,
+    repo: &Path,
+    data_dir: &Path,
+    target: WatchTarget,
+) -> Result<StartResult> {
+    let started = start_session(store, repo, data_dir)?;
+    let elevated = started.snap.elevated;
+    let watch = WatchFile {
+        session_id: started.paths.id.clone(),
+        target: target.clone(),
+        watcher_pid: None,
+        elevated,
+    };
+    leash_attrib::write_watch(&started.paths.dir, &watch)?;
+    if !elevated {
+        let log = leash_attrib::TraceLog::unavailable("not running as administrator");
+        let _ = leash_attrib::write_trace(&started.paths.dir, &log);
+        return Ok(started);
+    }
+    #[cfg(windows)]
+    {
+        let exe = std::env::current_exe().context("current exe")?;
+        match leash_attrib::win::spawn_watcher(&exe, data_dir, &started.paths.id) {
+            Ok(pid) => {
+                let mut watch = watch;
+                watch.watcher_pid = Some(pid);
+                let _ = leash_attrib::write_watch(&started.paths.dir, &watch);
+            }
+            Err(err) => {
+                let mut log = leash_attrib::TraceLog::default();
+                log.status = leash_attrib::AttributionStatus::Failed;
+                log.error = Some(err.to_string());
+                log.target = Some(target.label());
+                let _ = leash_attrib::write_trace(&started.paths.dir, &log);
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (data_dir, target);
+    }
+    Ok(started)
+}
+
+pub fn stop_watchers(paths: &SessionPaths) {
+    let _ = leash_attrib::request_stop(&paths.dir);
+    #[cfg(windows)]
+    {
+        let _ = leash_attrib::win::wait_for_watcher(&paths.dir, std::time::Duration::from_secs(8));
+    }
+}
+
+/// Start a session, run a command as a child, wait for it, then stop.
+pub fn run_command_session(
+    store: &SessionStore,
+    repo: &Path,
+    data_dir: &Path,
+    engine: &FilterEngine,
+    argv: &[String],
+) -> Result<(leash_snapshot::SessionPaths, DiffReport, u32)> {
+    anyhow::ensure!(!argv.is_empty(), "leash run needs a command after `--`");
+    #[cfg(not(windows))]
+    {
+        let _ = (store, repo, data_dir, engine, argv);
+        anyhow::bail!("leash run is Windows-only");
+    }
+    #[cfg(windows)]
+    {
+        run_command_session_windows(store, repo, data_dir, engine, argv)
+    }
+}
+
+#[cfg(windows)]
+fn run_command_session_windows(
+    store: &SessionStore,
+    repo: &Path,
+    data_dir: &Path,
+    engine: &FilterEngine,
+    argv: &[String],
+) -> Result<(leash_snapshot::SessionPaths, DiffReport, u32)> {
+    let started = start_session(store, repo, data_dir)?;
+    let elevated = started.snap.elevated;
+    let mut child = leash_attrib::win::spawn_command(argv, repo)?;
+    let child_pid = child.id();
+    let target = WatchTarget::Command {
+        argv: argv.to_vec(),
+        cwd: repo.to_string_lossy().into(),
+        pid: Some(child_pid),
+    };
+    let watch = WatchFile {
+        session_id: started.paths.id.clone(),
+        target: target.clone(),
+        watcher_pid: None,
+        elevated,
+    };
+    leash_attrib::write_watch(&started.paths.dir, &watch)?;
+
+    let dir = started.paths.dir.clone();
+    let target_c = target.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("leash-etw".into())
+        .spawn(move || {
+            let result = leash_attrib::win::run_collector(&dir, &target_c, elevated);
+            let _ = tx.send(result);
+        })
+        .ok();
+    let _status = child.wait().context("waiting for the command")?;
+    let _ = leash_attrib::request_stop(&started.paths.dir);
+    match rx.recv_timeout(std::time::Duration::from_secs(12)) {
+        Ok(Ok(_)) => {}
+        Ok(Err(err)) => {
+            let mut log = leash_attrib::TraceLog::default();
+            log.status = if elevated {
+                leash_attrib::AttributionStatus::Failed
+            } else {
+                leash_attrib::AttributionStatus::Unavailable
+            };
+            log.error = Some(err.to_string());
+            log.target = Some(target.label());
+            let _ = leash_attrib::write_trace(&started.paths.dir, &log);
+        }
+        Err(_) => {
+            let _ = leash_attrib::win::wait_for_watcher(
+                &started.paths.dir,
+                std::time::Duration::from_secs(3),
+            );
+        }
+    }
+
+    let (paths, report) = stop_session(store, Some(&started.paths.id), repo, data_dir, engine)?;
+    Ok((paths, report, child_pid))
+}
+
+pub fn resolve_attach_name(name: &str) -> Result<WatchTarget> {
+    let procs = leash_attrib::list_processes();
+    let matches: Vec<&leash_snapshot::ProcessEntry> = procs
+        .iter()
+        .filter(|p| leash_attrib::names_equal(&p.name, name) || p.exe.as_deref().is_some_and(|e| leash_attrib::names_equal(e, name)))
+        .collect();
+    anyhow::ensure!(
+        !matches.is_empty(),
+        "no running process matched `{name}`. Use `leash start --pid <pid>` if you know the pid."
+    );
+    let pids: Vec<u32> = {
+        let mut v: Vec<u32> = matches.iter().map(|p| p.pid).collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    };
+    Ok(WatchTarget::Names {
+        names: vec![name.to_string()],
+        pids,
+    })
+}
+
+pub fn resolve_attach_pid(pid: u32) -> Result<WatchTarget> {
+    let name = leash_attrib::list_processes()
+        .into_iter()
+        .find(|p| p.pid == pid)
+        .map(|p| p.name);
+    anyhow::ensure!(
+        name.is_some() || pid > 0,
+        "pid {pid} does not look like a running process"
+    );
+    if name.is_none() {
+        anyhow::bail!("no running process has pid {pid}");
+    }
+    Ok(WatchTarget::Pid { pid, name })
 }
